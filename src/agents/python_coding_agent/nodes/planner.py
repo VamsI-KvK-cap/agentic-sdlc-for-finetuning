@@ -13,6 +13,7 @@ def planner_node(state: BaseAgentState):
         task=state["task"],
         work_dir=state["work_dir"],
         file_structure=state["file_structure"],
+        existing_files=state.get("existing_files"),
         format_instructions=parser.get_format_instructions()
     )
     logger.debug(f"Python Planner Prompt: \n{formatted_prompt}")
