@@ -129,18 +129,18 @@ class BaseCodingAgent(ABC):
         return self._main_graph
 
 
-    # def run(self, task:str, work_dir: str, execution_id: int = None) -> BaseAgentState:
-    def run(self, task:str) -> BaseAgentState:
+    def run(self, task:str, work_dir: str, execution_id: int = None) -> BaseAgentState:
+    # def run(self, task:str, work_dir: str) -> BaseAgentState:
         graph = self.build_main_graph()
         config = {"recursion_limit": 50}
         return graph.invoke(
             {
                 "task": task,                
-                # "execution_id": execution_id,  # currently setup_node is handling it
-                # "work_dir": work_dir,  # currently setup_node is handling it
-                # "file_structure": "",
-                # "existing_files": {},
-                # "retry_count": {},
+                "execution_id": execution_id,  # currently setup_node is handling it
+                "work_dir": work_dir,  # currently setup_node is handling it
+                "file_structure": "",
+                "existing_files": {},
+                "retry_count": {},
             },
                 config=config
             )

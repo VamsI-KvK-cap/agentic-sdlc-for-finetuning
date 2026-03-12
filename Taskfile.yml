@@ -1,0 +1,66 @@
+version: '3'
+
+tasks:
+
+  # ── Server ────────────────────────────────────────────────────────────────
+  serve:
+    desc: Start the FastAPI dev server
+    cmd: python -m uvicorn web.main:app --reload
+
+  # ── Database ──────────────────────────────────────────────────────────────
+  db:migrate:
+    desc: Run Alembic migrations
+    dir: web
+    cmd: python -m alembic upgrade head
+
+  db:rollback:
+    desc: Rollback last Alembic migration
+    dir: web
+    cmd: python -m alembic downgrade -1
+
+  db:reset:
+    desc: Drop and recreate the agentic_sdlc database (WARNING - destroys all data)
+    cmds:
+      - sudo -u postgres psql -c "DROP DATABASE IF EXISTS agentic_sdlc;"
+      - sudo -u postgres psql -c "CREATE DATABASE agentic_sdlc;"
+      - task: db:migrate
+
+  db:clean:
+    desc: Truncate the executions table (keeps schema intact)
+    cmd: sudo -u postgres psql -d agentic_sdlc -c "TRUNCATE TABLE executions RESTART IDENTITY;"
+
+  # ── Output ────────────────────────────────────────────────────────────────
+  clean:output:
+    desc: Delete all agent-generated files under output/
+    cmd: find output/ -mindepth 1 -delete
+    ignore_error: true
+
+  # ── Combined cleanup ──────────────────────────────────────────────────────
+  clean:all:
+    desc: Clean output folder + truncate executions table
+    cmds:
+      - task: clean:output
+      - task: db:clean
+
+  # ── Logs ──────────────────────────────────────────────────────────────────
+  clean:logs:
+    desc: Clear log files under logs/
+    cmd: find logs/ -name "*.log" -delete
+    ignore_error: true
+
+  # ── Tests ─────────────────────────────────────────────────────────────────
+  test:
+    desc: Run tests
+    cmd: python -m pytest tests/ -v
+
+  # ── Install ───────────────────────────────────────────────────────────────
+  install:
+    desc: Install all dependencies
+    cmd: uv add fastapi uvicorn sqlalchemy asyncpg alembic pydantic python-dotenv
+
+  # ── Setup (first time) ────────────────────────────────────────────────────
+  setup:
+    desc: Full first-time setup — create DB, run migrations
+    cmds:
+      - sudo -u postgres psql -c "CREATE DATABASE agentic_sdlc;"
+      - task: db:migrate

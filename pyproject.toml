@@ -5,14 +5,19 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "alembic>=1.18.4",
+    "asyncpg>=0.31.0",
     "codecarbon[carbonboard]>=3.2.3",
     "fastapi>=0.133.0",
     "langchain-core>=1.2.15",
     "langchain-openai>=1.1.10",
     "langgraph>=1.0.9",
     "langgraph-prebuilt>=1.0.8",
+    "pydantic>=2.12.5",
     "pygls>=2.0.1",
     "python-dotenv>=1.2.2",
     "python-lsp-server>=1.14.0",
     "ruff>=0.15.4",
+    "sqlalchemy>=2.0.48",
+    "uvicorn>=0.41.0",
 ]
