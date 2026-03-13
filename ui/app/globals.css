@@ -1,0 +1,90 @@
+@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background:  220 16% 8%;
+    --surface:     220 14% 11%;
+    --border:      220 12% 18%;
+    --accent:      180 85% 50%;
+    --accent-dim:  180 60% 20%;
+    --muted:       220 12% 16%;
+    --muted-fg:    220 10% 50%;
+    --foreground:  220 15% 92%;
+    --success:     142 70% 45%;
+    --warning:     38  90% 55%;
+    --danger:      0   72% 55%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+
+  body {
+    @apply font-sans antialiased;
+  }
+
+  ::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-background;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-border rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-muted-fg;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-surface border border-border rounded-lg p-5;
+  }
+
+  .btn-primary {
+    @apply bg-accent text-background font-semibold font-mono text-sm px-4 py-2 rounded-md
+           hover:opacity-90 active:scale-95 transition-all duration-150 disabled:opacity-40
+           disabled:cursor-not-allowed;
+  }
+
+  .btn-ghost {
+    @apply text-muted-fg hover:text-foreground hover:bg-muted px-3 py-2 rounded-md
+           text-sm font-mono transition-all duration-150;
+  }
+
+  .badge {
+    @apply inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-mono font-medium;
+  }
+
+  .badge-pending  { @apply bg-muted text-muted-fg; }
+  .badge-running  { @apply bg-accent-dim text-accent; }
+  .badge-completed { @apply bg-green-950 text-green-400; }
+  .badge-failed   { @apply bg-red-950 text-red-400; }
+
+  .nav-item {
+    @apply flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-mono
+           text-muted-fg hover:text-foreground hover:bg-muted transition-all duration-150
+           cursor-pointer;
+  }
+
+  .nav-item.active {
+    @apply bg-accent-dim text-accent;
+  }
+
+  .input {
+    @apply bg-muted border border-border rounded-md px-3 py-2 text-sm font-mono
+           text-foreground placeholder:text-muted-fg focus:outline-none focus:border-accent
+           focus:ring-1 focus:ring-accent transition-all duration-150 w-full;
+  }
+}

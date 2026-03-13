@@ -1,0 +1,21 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+.env
+.ruff_cache
+emissions/*
+!emissions/.gitkeep
+output/*
+!output/.gitkeep
+logs/*
+!logs/.gitkeep
+ui/node_modules/
+ui/.next/
+ui/.env.local
