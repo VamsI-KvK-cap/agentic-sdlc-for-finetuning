@@ -17,3 +17,5 @@ output/*
 logs/*
 !logs/.gitkeep
 ui/node_modules/
+ui/.next/
+ui/.env.local
