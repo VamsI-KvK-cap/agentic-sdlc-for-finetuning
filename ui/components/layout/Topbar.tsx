@@ -4,7 +4,7 @@ import { usePathname } from 'next/navigation'
 import { Activity } from 'lucide-react'
 
 const PAGE_TITLES: Record<string, { title: string; description: string }> = {
-  '/dashboard':  { title: 'Dashboard',   description: 'Overview of agent executions' },
+  '/dashboard':  { title: 'Agentic SDLC Dashboard',   description: 'Overview of agent executions' },
   '/agents':     { title: 'Agents',      description: 'Trigger a coding agent' },
   '/executions': { title: 'Executions',  description: 'All execution runs' },
   '/chat':       { title: 'Chat',        description: 'RAG-powered assistant' },

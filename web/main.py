@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from web.database import engine, Base
 from web.executions.router import router
+from web.agents.router import router as agent_router
 
 # -------------------------------------------------------------------
 # Application lifespan context
@@ -50,6 +51,7 @@ app.add_middleware(
 # Routes from web.executions.router will be available under /api/v1
 # 'tags' is used to group endpoints in the OpenAPI docs
 app.include_router(router, prefix='/api/v1', tags=["executions"])
+app.include_router(agent_router,prefix='/api/v1', tags=["agents"])
 
 # -------------------------------------------------------------------
 # Health check endpoint

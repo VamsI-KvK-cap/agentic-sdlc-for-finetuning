@@ -33,7 +33,8 @@ export function Sidebar() {
         </div>
         <div>
           <p className="text-sm font-bold font-sans tracking-tight text-foreground">Agentic</p>
-          <p className="text-[10px] font-mono text-muted-fg -mt-0.5 uppercase tracking-widest">SDLC</p>
+          {/* <p className="text-[10px] font-mono text-muted-fg -mt-0.5 uppercase tracking-widest">SDLC</p> */}
+          <p className="text-[11px] font-bold -mt-0.5 uppercase tracking-widest">SDLC</p>
         </div>
       </div>
 

@@ -10,11 +10,15 @@ exec_id = '0'
 working_dir = os.path.join(working_dir, exec_id)
 
 AGENTS = {
-    "python": PythonCodingAgent,
+    "PythonCodingAgent": PythonCodingAgent,
     # "javascript": JavaScriptCodingAgent,
 }
 
-# def run(task: str, work_dir: str, agent_name: str = "python", execution_id: int = 4):
+AGENTS_DESCRIPTIONS = {
+        "PythonCodingAgent": "Generates Python code with ruff linting",
+        "javascript": "Generates JavaScript/TypeScript with eslint",
+        "go": "Generates Go code with golangci-lint",
+    }
 def run(task: str, agent_name: str = "python", work_dir: str = working_dir, execution_id: int = exec_id):    
     agent_cls = AGENTS.get(agent_name)
     if not agent_cls:
@@ -22,7 +26,7 @@ def run(task: str, agent_name: str = "python", work_dir: str = working_dir, exec
 
     agent = agent_cls(config={})
     return agent.run(task=task, work_dir=work_dir ,execution_id=execution_id )
-    # return agent.run(task=task, work_dir=work_dir, execution_id=execution_id)
+
 
 if __name__ == "__main__":
     # input_state = "Write a detailed FastAPI endpoint for CRUD ops for a llm application that can take user input in text of file format"

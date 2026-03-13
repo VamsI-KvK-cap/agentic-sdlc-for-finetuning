@@ -45,7 +45,8 @@ export function AgentSelector({ agents, loading, value, onChange }: Props) {
           <Bot className="w-3.5 h-3.5 text-accent flex-shrink-0" />
           {selected ? (
             <span className="text-foreground">
-              {selected.language}
+              {/* {selected.language} */}
+              {selected.name}
               <span className="text-muted-fg ml-2 text-[11px]">— {selected.description}</span>
             </span>
           ) : (
@@ -71,7 +72,8 @@ export function AgentSelector({ agents, loading, value, onChange }: Props) {
                 <Bot className="w-3 h-3 text-accent" />
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-mono text-foreground">{agent.language}</p>
+                {/* <p className="text-sm font-mono text-foreground">{agent.language}</p> */}
+                <p className="text-sm font-mono text-foreground">{agent.name}</p>
                 <p className="text-[11px] font-mono text-muted-fg">{agent.description}</p>
               </div>
               {agent.name === value && (
