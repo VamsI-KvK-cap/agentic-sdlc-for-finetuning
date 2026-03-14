@@ -4,13 +4,34 @@ An AI-powered software development lifecycle system. LangGraph-based coding agen
 
 ---
 
+## Table of Contents
+
+- [How It Works](#how-it-works)
+- [Architecture](#architecture)
+- [Tech Stack](#tech-stack)
+- [Prerequisites](#prerequisites)
+- [Option A — Local Development Setup](#option-a--local-development-setup)
+- [Option B — Docker Setup (Recommended)](#option-b--docker-setup-recommended)
+- [Running Locally (All Services)](#running-locally-all-services)
+- [UI Pages](#ui-pages)
+- [API Endpoints](#api-endpoints)
+- [Database Schema](#database-schema)
+- [Taskfile Reference](#taskfile-reference)
+- [Adding a New Language Agent](#adding-a-new-language-agent)
+- [Troubleshooting](#troubleshooting)
+- [Roadmap](#roadmap)
+
+---
+
 ## How It Works
 
 1. Open the **Agents** page in the UI, select an agent, describe your task, and click Generate
 2. The API creates an execution record in PostgreSQL and responds immediately (`202 Accepted`)
-3. In the background, the orchestrator picks the right coding agent and runs it
-4. The agent goes through a **plan → code → review → write → lint** loop via LangGraph
-5. The **Execution Detail** page streams live status updates via SSE until completion
+3. The API sends a message to **Redis** via Celery — FastAPI's job is done
+4. The **Celery worker** (separate process) picks up the message and runs the agent
+5. The agent goes through a **plan → code → review → write → lint** loop via LangGraph
+6. The **Execution Detail** page streams live status updates via SSE until completion
+7. Monitor worker activity in real time via **Flower** at `http://localhost:5555`
 
 ---
 
@@ -44,6 +65,10 @@ agentic-sdlc/
 │   │   └── router.py                   # REST endpoints + SSE stream
 │   ├── agents/                         # Agents feature module
 │   │   └── router.py                   # GET /api/v1/agents endpoint
+│   ├── worker/                         # Celery async execution layer
+│   │   ├── __init__.py
+│   │   ├── celery_app.py               # Celery instance + configuration
+│   │   └── tasks.py                    # Agent execution task definition
 │   └── alembic/                        # Database migrations
 │       ├── alembic.ini
 │       ├── env.py
@@ -66,11 +91,33 @@ agentic-sdlc/
 ├── data/                               # Shared data directory (persistent)
 ├── Taskfile.yml                        # Dev task shortcuts (local + Docker)
 ├── docker-compose.yml                  # Full stack container orchestration
-├── Dockerfile.api                      # FastAPI container image
+├── Dockerfile.api                      # FastAPI + Celery worker image
 ├── Dockerfile.ui                       # Next.js container image
 ├── .env.example                        # Local environment template
 ├── .env.docker.example                 # Docker environment template
 └── pyproject.toml
+```
+
+### Request Flow (Phase 2 — Celery)
+
+```
+Browser
+  │
+  ▼
+Next.js UI (port 3000)
+  │  POST /api/v1/executions
+  ▼
+FastAPI (port 8000)
+  │  creates DB row (PENDING)
+  │  run_agent_task.delay()
+  ▼
+Redis (port 6379)          ◄── Flower monitors this (port 5555)
+  │  task queue
+  ▼
+Celery Worker
+  │  PENDING → RUNNING → COMPLETED/FAILED
+  ▼
+PostgreSQL (port 5433)
 ```
 
 ### LangGraph Agent Workflow
@@ -117,7 +164,9 @@ coder → reviewer → writer → static_check → END
 | Layer | Technology |
 |---|---|
 | Containerisation | [Docker](https://www.docker.com) + [Docker Compose](https://docs.docker.com/compose/) |
-| Message broker | [Redis 7](https://redis.io) (ready for Phase 2 Celery workers) |
+| Task queue | [Celery](https://docs.celeryq.dev) |
+| Message broker | [Redis 7](https://redis.io) |
+| Worker monitoring | [Flower](https://flower.readthedocs.io) (open source) |
 | Task runner | [Task](https://taskfile.dev) |
 
 ---
@@ -128,13 +177,14 @@ coder → reviewer → writer → static_check → END
 - **Python** 3.12+
 - **Node.js** 18+ and npm
 - **PostgreSQL** 14+
+- **Redis** — `sudo apt install redis-server`
 - **uv** — `pip install uv`
 - **Task** (optional) — `sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b ~/.local/bin`
 
 ### Docker Setup
 - **Docker** 24+ — [Install Docker](https://docs.docker.com/get-docker/)
 - **Docker Compose** v2+ (included with Docker Desktop)
-- No Python, Node, or PostgreSQL needed on your host machine
+- No Python, Node, PostgreSQL, or Redis needed on your host machine
 
 ---
 
@@ -165,6 +215,8 @@ Edit `.env`:
 ```env
 DATABASE_URL=postgresql+asyncpg://postgres:your_password@localhost:5432/agentic_sdlc
 ANTHROPIC_API_KEY=sk-ant-...
+REDIS_URL=redis://localhost:6379/0
+WORKING_DIR=./output
 ```
 
 ### 4. Set up PostgreSQL
@@ -175,13 +227,19 @@ sudo -u postgres psql -c "CREATE DATABASE agentic_sdlc;"
 sudo -u postgres psql -c "ALTER USER postgres WITH PASSWORD 'your_password';"
 ```
 
-### 5. Run database migrations
+### 5. Start Redis
+
+```bash
+sudo service redis-server start
+```
+
+### 6. Run database migrations
 
 ```bash
 cd web && python -m alembic upgrade head && cd ..
 ```
 
-### 6. Start the backend
+### 7. Start the backend
 
 ```bash
 python -m uvicorn web.main:app --reload --host 0.0.0.0
@@ -189,7 +247,23 @@ python -m uvicorn web.main:app --reload --host 0.0.0.0
 
 API running at `http://localhost:8000` — Swagger UI at `http://localhost:8000/docs`
 
-### 7. Set up and start the frontend
+### 8. Start the Celery worker
+
+```bash
+# In a new terminal (with venv activated)
+celery -A web.worker.celery_app worker --loglevel=info --queues=agent_tasks --concurrency=2
+```
+
+### 9. Start Flower (optional — worker monitoring)
+
+```bash
+# In a new terminal (with venv activated)
+celery -A web.worker.celery_app flower --port=5555
+```
+
+Flower UI at `http://localhost:5555`
+
+### 10. Set up and start the frontend
 
 ```bash
 cd ui && npm install
@@ -218,9 +292,39 @@ UI running at `http://localhost:3000`
 
 ---
 
+## Running Locally (All Services)
+
+You need four terminals:
+
+```bash
+# Terminal 1 — Backend API
+source .venv/bin/activate
+python -m uvicorn web.main:app --reload --host 0.0.0.0
+
+# Terminal 2 — Celery Worker
+source .venv/bin/activate
+celery -A web.worker.celery_app worker --loglevel=info --queues=agent_tasks --concurrency=2
+
+# Terminal 3 — Flower (optional)
+source .venv/bin/activate
+celery -A web.worker.celery_app flower --port=5555
+
+# Terminal 4 — Frontend
+cd ui && npm run dev
+```
+
+Or use Task shortcuts:
+```bash
+task serve          # terminal 1
+task serve:worker   # terminal 2
+task serve:flower   # terminal 3
+task serve:ui       # terminal 4
+```
+
+---
 ## Option B — Docker Setup (Recommended)
 
-Runs the full stack in containers — no local Python, Node, or PostgreSQL required.
+Runs the full stack in containers — no local Python, Node, PostgreSQL, or Redis required.
 
 ### 1. Clone the repo
 
@@ -235,18 +339,20 @@ cd agentic-sdlc
 cp .env.docker.example .env.docker
 ```
 
-Edit `.env.docker` — the key values to set:
+Edit `.env.docker` — key values to set:
 ```env
 ANTHROPIC_API_KEY=sk-ant-...
 NEXT_PUBLIC_API_URL=http://<YOUR_WSL2_IP>:8000
+REDIS_URL=redis://redis:6379/0
+PYTHONPATH=/app
 ```
 
-> **WSL2 users:** The browser runs on Windows so `localhost` doesn't reach the WSL2 network.
+> **WSL2 users:** The browser runs on Windows so `localhost` doesn't reach WSL2.
 > Find your WSL2 IP:
 > ```bash
 > ip addr show eth0 | grep "inet " | awk '{print $2}' | cut -d/ -f1
 > ```
-> Use that IP for `NEXT_PUBLIC_API_URL`. Also add it to `allow_origins` in `web/main.py`.
+> Use that IP for `NEXT_PUBLIC_API_URL` and add it to `allow_origins` in `web/main.py`.
 >
 > **Permanent fix** — enable mirrored networking in `C:\Users\<you>\.wslconfig`:
 > ```ini
@@ -258,45 +364,35 @@ NEXT_PUBLIC_API_URL=http://<YOUR_WSL2_IP>:8000
 ### 3. Start all containers
 
 ```bash
-docker compose --env-file .env.docker up --build
+task docker:up:d
 ```
 
-Or using Task:
+Or without Task:
 ```bash
-task docker:up
+docker compose --env-file .env.docker up --build -d
 ```
 
-This starts: **PostgreSQL** · **Redis** · **FastAPI API** · **Next.js UI**
+This starts 6 services: **PostgreSQL** · **Redis** · **FastAPI** · **Celery Worker** · **Flower** · **Next.js**
 
 ### 4. Run database migrations
 
 ```bash
-docker compose exec api python -m alembic upgrade head
+task docker:db:migrate
 ```
 
 Or:
 ```bash
-task docker:db:migrate
+docker compose exec api python -m alembic upgrade head
 ```
 
-### 5. Open the UI
+### 5. Open the services
 
-```
-http://localhost:3000
-```
-
----
-
-## Running Both Servers (Local)
-
-```bash
-# Terminal 1 — Backend
-source .venv/bin/activate
-python -m uvicorn web.main:app --reload --host 0.0.0.0
-
-# Terminal 2 — Frontend
-cd ui && npm run dev
-```
+| Service | URL |
+|---|---|
+| UI | `http://localhost:3000` |
+| API | `http://localhost:8000` |
+| API Docs | `http://localhost:8000/docs` |
+| Flower (worker monitor) | `http://localhost:5555` |
 
 ---
 
@@ -365,6 +461,8 @@ curl -N http://localhost:8000/api/v1/executions/1/stream
 ```bash
 task serve              # Start FastAPI backend locally
 task serve:ui           # Start Next.js frontend locally
+task serve:worker       # Start Celery worker locally
+task serve:flower       # Start Flower monitoring UI locally
 task db:migrate         # Run Alembic migrations (local DB)
 task db:rollback        # Rollback last migration (local DB)
 task db:reset           # Drop and recreate local DB (destructive)
@@ -392,6 +490,7 @@ task docker:restart     # Restart all containers
 task docker:build       # Build all images
 task docker:build:api   # Rebuild API image only
 task docker:build:ui    # Rebuild UI image only
+task docker:build:worker # Rebuild worker image only
 
 # Database
 task docker:db:migrate  # Run migrations inside api container
@@ -400,15 +499,25 @@ task docker:db:clean    # Truncate executions table
 task docker:db:reset    # Drop and recreate DB (destructive)
 task docker:db:shell    # Open psql shell in db container
 
+# Celery worker
+task docker:worker:restart    # Restart worker container only
+task docker:celery:inspect    # List active tasks being processed
+task docker:celery:stats      # Show worker stats
+task docker:celery:purge      # Purge all pending tasks (WARNING — irreversible)
+
 # Logs
 task docker:logs        # Stream logs from all containers
 task docker:logs:api    # Stream API logs only
 task docker:logs:ui     # Stream UI logs only
 task docker:logs:db     # Stream DB logs only
+task docker:logs:worker # Stream Celery worker logs only
+task docker:logs:flower # Stream Flower logs only
 
 # Shell access
-task docker:shell:api   # bash inside api container
-task docker:shell:ui    # sh inside ui container
+task docker:shell:api    # bash inside api container
+task docker:shell:worker # bash inside worker container
+task docker:shell:ui     # sh inside ui container
+task docker:shell:db     # psql shell inside db container
 
 # Status
 task docker:ps          # Show container status
@@ -440,6 +549,36 @@ The agent automatically appears in the UI dropdown and `GET /api/v1/agents` — 
 
 ---
 
+## Troubleshooting
+
+### `celery: executable file not found in $PATH`
+Celery isn't installed to the system PATH in the container. Ensure `Dockerfile.api` uses `uv pip install --system` (not `uv sync`) so binaries land in `/usr/local/bin`.
+
+### `ModuleNotFoundError: No module named 'src'`
+The project root isn't on Python's path inside the container. Add to the worker and api services in `docker-compose.yml`:
+```yaml
+environment:
+  PYTHONPATH: /app
+```
+
+### `Future attached to a different loop`
+SQLAlchemy's async engine was bound to a different event loop. Ensure `web/worker/tasks.py` uses a single `asyncio.run()` for the entire task lifecycle and creates a fresh engine inside `_run_agent_async()`.
+
+### `npm install` times out (WSL2)
+DNS resolution is broken. Fix with:
+```bash
+echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf
+```
+
+### UI shows "Could not reach API"
+The browser (Windows) can't reach `localhost` inside WSL2. Use your WSL2 IP in `NEXT_PUBLIC_API_URL`:
+```bash
+ip addr show eth0 | grep "inet " | awk '{print $2}' | cut -d/ -f1
+```
+Or enable mirrored networking permanently — see the Docker setup section.
+
+---
+
 ## Roadmap
 
 - [x] LangGraph coding agent (Python)
@@ -447,7 +586,7 @@ The agent automatically appears in the UI dropdown and `GET /api/v1/agents` — 
 - [x] SSE live execution stream
 - [x] Next.js dashboard UI (all pages)
 - [x] Docker Compose full-stack setup
-- [ ] Celery + Redis task queue (Phase 2)
+- [x] Celery + Redis task queue (Phase 2)
 - [ ] Langfuse tracing — self-hosted (Phase 3)
 - [ ] Prometheus + Grafana metrics (Phase 3)
 - [ ] JavaScript / Go agents

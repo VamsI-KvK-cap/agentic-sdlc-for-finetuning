@@ -89,6 +89,7 @@ services:
       # CONCEPT: Inside Docker network, services reach each other
       # by service name. "localhost" would mean the container itself.
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/agentic_sdlc
+      PYTHONPATH: /app
     volumes:
       # CONCEPT: Bind mounts for hot reload.
       # Mounting source code means edits on your host are
@@ -114,34 +115,82 @@ services:
       redis:
         condition: service_healthy
 
-  # ── Celery Worker (stub for Phase 2) ───────────────────────
-  # CONCEPT: A worker is a separate process that picks up jobs
-  # from a queue and executes them. It uses the same codebase
-  # as the API but runs a different command (celery instead of uvicorn).
-  # We define it now so the architecture is clear — it's commented
-  # out until Phase 2 when we set up Celery properly.
+  # ── Celery Worker ───────────────────────────────────────────
+  # CONCEPT: The worker is a completely separate process from the API.
+  # It runs the same Docker image (Dockerfile.api) but with a different
+  # CMD — instead of uvicorn, it runs the celery CLI.
   #
-  # worker:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile.api       # same image as api
-  #   container_name: agentic_worker
-  #   restart: unless-stopped
-  #   env_file:
-  #     - .env.docker
-  #   command: celery -A web.worker worker --loglevel=info
-  #   volumes:
-  #     - ./src:/app/src
-  #     - ./web:/app/web
-  #     - ./output:/app/output           # workers write generated code here
-  #     - ./logs:/app/logs
-  #   networks:
-  #     - agentic_net
-  #   depends_on:
-  #     db:
-  #       condition: service_healthy
-  #     redis:
-  #       condition: service_healthy
+  # "celery -A web.worker.celery_app worker"
+  #   -A web.worker.celery_app  → the Celery app instance to use
+  #   worker                    → start a worker (not beat scheduler etc.)
+  #   --loglevel=info           → log task start/stop/errors
+  #   --queues=agent_tasks      → only consume from our named queue
+  #   --concurrency=2           → run 2 tasks in parallel (adjust to your CPU)
+  #
+  # CONCEPT: --concurrency controls how many agent tasks run simultaneously.
+  # Each concurrent task is a thread inside the worker process.
+  # Set this based on your machine's resources — agent runs are CPU/IO heavy.
+  # For development 2 is fine; production you'd tune this carefully.
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.api       # same image as api — shares all code
+    container_name: agentic_worker
+    restart: unless-stopped
+    env_file:
+      - .env.docker
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/agentic_sdlc
+      REDIS_URL: redis://redis:6379/0
+      PYTHONPATH: /app
+    # CONCEPT: `command` overrides the CMD in Dockerfile.api.
+    # The api service uses: uvicorn web.main:app ...
+    # The worker service uses: celery -A web.worker.celery_app worker ...
+    # Same image, different entrypoint — this is the standard pattern.
+    command: celery -A web.worker.celery_app worker --loglevel=info --queues=agent_tasks --concurrency=2
+    volumes:
+      - ./src:/app/src
+      - ./web:/app/web
+      - ./output:/app/output           # worker writes generated code here
+      - ./logs:/app/logs               # worker writes logs here
+      - ./data:/app/data
+    networks:
+      - agentic_net
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ── Flower — Celery Monitoring Dashboard ────────────────────
+  # CONCEPT: Flower is an open-source real-time web UI for monitoring
+  # Celery workers and tasks. Think of it as a dashboard that shows:
+  #   - Active workers and their status
+  #   - Tasks currently running, queued, completed, failed
+  #   - Task history with timing and arguments
+  #   - Worker resource usage (CPU, memory)
+  #   - Ability to revoke (cancel) queued tasks
+  #
+  # Access at: http://localhost:5555
+  #
+  # Flower connects to Redis (the broker) directly to read task state.
+  # It does NOT need access to PostgreSQL.
+  flower:
+    image: mher/flower:2.0             # official Flower image
+    container_name: agentic_flower
+    restart: unless-stopped
+    environment:
+      # CONCEPT: CELERY_BROKER_URL tells Flower where Redis is.
+      # Uses service name "redis" — same Docker internal network.
+      CELERY_BROKER_URL: redis://redis:6379/0
+      FLOWER_PORT: 5555
+    ports:
+      - "5555:5555"
+    networks:
+      - agentic_net
+    depends_on:
+      - redis
+      - worker
 
   # ── Next.js Frontend ────────────────────────────────────────
   ui:

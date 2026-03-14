@@ -35,12 +35,24 @@ RUN pip install uv --no-cache-dir
 COPY pyproject.toml .
 COPY uv.lock* .
 
-# Install dependencies (excluding codecarbon — heavy + unnecessary in Docker)
-# --system installs into the system Python, not a venv (we're already isolated)
-# --no-dev skips development-only dependencies
-RUN uv sync --no-dev --system || uv pip install --system \
+# Error response from daemon: failed to create task for container: failed to create shim task: OCI runtime create failed: runc create failed: unable to start container process: error during container init: exec: "celery": executable file not found in $PATH: unknown
+# FIXED: Install dependencies into the SYSTEM Python using pip via uv.
+# "uv pip install --system" installs packages into /usr/local/lib/python3.12
+# which means all binaries (celery, uvicorn, ruff) land in /usr/local/bin
+# and are available in PATH without any venv activation.
+#
+# Why not `uv sync`?
+# `uv sync` creates/uses a .venv — binaries go into /app/.venv/bin/celery
+# which is NOT in PATH by default. The docker-compose `command:` override
+# just runs `celery` and the shell can't find it.
+#
+# Two ways to fix this:
+#   Option A (this file): install --system so binaries are in /usr/local/bin
+#   Option B: change docker-compose command to /app/.venv/bin/celery ...
+# Option A is cleaner for containers — no venv activation needed anywhere.
+RUN uv pip install --system \
     fastapi \
-    uvicorn \
+    "uvicorn[standard]" \
     sqlalchemy \
     asyncpg \
     alembic \
@@ -50,6 +62,7 @@ RUN uv sync --no-dev --system || uv pip install --system \
     langgraph-prebuilt \
     langchain-core \
     langchain-openai \
+    "celery[redis]" \
     ruff \
     anthropic
 
@@ -78,4 +91,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 # The command that runs when the container starts.
 # --host 0.0.0.0 binds to all interfaces (required in Docker)
 # --reload watches for file changes (hot reload for development)
+# Default command — overridden by docker-compose `command:` for the worker
 CMD ["uvicorn", "web.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

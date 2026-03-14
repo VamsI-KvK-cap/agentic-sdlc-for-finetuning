@@ -6,7 +6,6 @@ tasks:
   # LOCAL DEV — runs directly on your machine (no Docker)
   # ════════════════════════════════════════════════════════════
 
-  # ── Server ────────────────────────────────────────────────────────────────
   serve:
     desc: Start the FastAPI dev server locally
     cmd: python -m uvicorn web.main:app --reload --host 0.0.0.0
@@ -16,7 +15,15 @@ tasks:
     dir: ui
     cmd: npm run dev
 
-  # ── Database (local PostgreSQL) ───────────────────────────────────────────
+  serve:worker:
+    desc: Start Celery worker locally (requires Redis running)
+    cmd: celery -A web.worker.celery_app worker --loglevel=info --queues=agent_tasks --concurrency=2
+
+  serve:flower:
+    desc: Start Flower monitoring UI locally (requires Redis + worker)
+    cmd: celery -A web.worker.celery_app flower --port=5555
+
+  # ── Database (local) ──────────────────────────────────────────────────────
   db:migrate:
     desc: Run Alembic migrations (local DB)
     dir: web
@@ -28,17 +35,17 @@ tasks:
     cmd: python -m alembic downgrade -1
 
   db:reset:
-    desc: Drop and recreate the local agentic_sdlc database (WARNING — destroys all data)
+    desc: Drop and recreate local DB (WARNING — destroys all data)
     cmds:
       - sudo -u postgres psql -c "DROP DATABASE IF EXISTS agentic_sdlc;"
       - sudo -u postgres psql -c "CREATE DATABASE agentic_sdlc;"
       - task: db:migrate
 
   db:clean:
-    desc: Truncate the executions table (local DB, keeps schema intact)
+    desc: Truncate executions table (local DB)
     cmd: sudo -u postgres psql -d agentic_sdlc -c "TRUNCATE TABLE executions RESTART IDENTITY;"
 
-  # ── Output / Logs ─────────────────────────────────────────────────────────
+  # ── Cleanup ───────────────────────────────────────────────────────────────
   clean:output:
     desc: Delete all agent-generated files under output/
     cmd: find output/ -mindepth 1 -delete
@@ -50,26 +57,25 @@ tasks:
     ignore_error: true
 
   clean:all:
-    desc: Clean output folder + truncate executions table (local)
+    desc: Clean output + truncate executions table (local)
     cmds:
       - task: clean:output
       - task: db:clean
 
-  # ── Tests ─────────────────────────────────────────────────────────────────
+  # ── Tests & install ───────────────────────────────────────────────────────
   test:
     desc: Run pytest test suite
     cmd: python -m pytest tests/ -v
 
-  # ── Setup (first time local) ──────────────────────────────────────────────
+  install:
+    desc: Install all Python dependencies from lockfile
+    cmd: uv sync
+
   setup:
     desc: First-time local setup — create DB and run migrations
     cmds:
       - sudo -u postgres psql -c "CREATE DATABASE agentic_sdlc;"
       - task: db:migrate
-
-  install:
-    desc: Install all Python dependencies from lockfile
-    cmd: uv sync
 
 
   # ════════════════════════════════════════════════════════════
@@ -82,23 +88,19 @@ tasks:
     cmd: docker compose --env-file .env.docker up --build
 
   docker:up:d:
-    desc: Build images and start all containers (detached / background)
+    desc: Build images and start all containers (background)
     cmd: docker compose --env-file .env.docker up --build -d
 
-  docker:start:attached:
-    desc: Start containers without rebuilding (assumes images exist)
+  docker:start:
+    desc: Start containers without rebuilding
     cmd: docker compose --env-file .env.docker up
 
-  docker:start:
-    desc: Start containers without rebuilding (assumes images exist)
-    cmd: docker compose --env-file .env.docker up -d
-
   docker:stop:
-    desc: Stop all running containers (keeps volumes and data)
+    desc: Stop all containers (keeps volumes and data)
     cmd: docker compose down
 
   docker:down:
-    desc: Stop containers and remove volumes — WARNING destroys all DB data
+    desc: Stop containers and remove volumes — WARNING destroys all data
     cmd: docker compose down -v
 
   docker:restart:
@@ -107,24 +109,28 @@ tasks:
 
   # ── Building ──────────────────────────────────────────────────────────────
   docker:build:
-    desc: Build all Docker images without starting containers
+    desc: Build all Docker images
     cmd: docker compose --env-file .env.docker build
 
   docker:build:api:
-    desc: Rebuild only the API image
+    desc: Rebuild API image only
     cmd: docker compose --env-file .env.docker build api
 
   docker:build:ui:
-    desc: Rebuild only the UI image
+    desc: Rebuild UI image only
     cmd: docker compose --env-file .env.docker build ui
 
-  # ── Database (Docker PostgreSQL) ──────────────────────────────────────────
+  docker:build:worker:
+    desc: Rebuild worker image only (same as api image)
+    cmd: docker compose --env-file .env.docker build worker
+
+  # ── Database ──────────────────────────────────────────────────────────────
   docker:db:migrate:
-    desc: Run Alembic migrations inside the api container
+    desc: Run Alembic migrations inside api container
     cmd: docker compose exec api python -m alembic upgrade head
 
   docker:db:rollback:
-    desc: Rollback last migration inside the api container
+    desc: Rollback last migration inside api container
     cmd: docker compose exec api python -m alembic downgrade -1
 
   docker:db:clean:
@@ -139,8 +145,29 @@ tasks:
       - task: docker:db:migrate
 
   docker:db:shell:
-    desc: Open a psql shell inside the Docker PostgreSQL container
+    desc: Open psql shell inside the db container
     cmd: docker compose exec db psql -U postgres -d agentic_sdlc
+
+  # ── Celery worker tasks ───────────────────────────────────────────────────
+  docker:worker:restart:
+    desc: Restart only the Celery worker container
+    cmd: docker compose restart worker
+
+  docker:worker:scale:
+    desc: Scale worker to N instances e.g. task docker:worker:scale -- --scale worker=3
+    cmd: docker compose --env-file .env.docker up -d --scale worker={{.CLI_ARGS}}
+
+  docker:celery:inspect:
+    desc: List active Celery tasks currently being processed
+    cmd: docker compose exec worker celery -A web.worker.celery_app inspect active
+
+  docker:celery:stats:
+    desc: Show Celery worker stats (queues, concurrency, task counts)
+    cmd: docker compose exec worker celery -A web.worker.celery_app inspect stats
+
+  docker:celery:purge:
+    desc: Purge all pending tasks from the queue — WARNING irreversible
+    cmd: docker compose exec worker celery -A web.worker.celery_app purge -f
 
   # ── Logs ──────────────────────────────────────────────────────────────────
   docker:logs:
@@ -148,56 +175,64 @@ tasks:
     cmd: docker compose logs -f
 
   docker:logs:api:
-    desc: Stream logs from the api container only
+    desc: Stream API logs only
     cmd: docker compose logs -f api
 
   docker:logs:ui:
-    desc: Stream logs from the ui container only
+    desc: Stream UI logs only
     cmd: docker compose logs -f ui
 
   docker:logs:db:
-    desc: Stream logs from the db container only
+    desc: Stream DB logs only
     cmd: docker compose logs -f db
 
   docker:logs:worker:
-    desc: Stream logs from the worker container only (Phase 2)
+    desc: Stream Celery worker logs only
     cmd: docker compose logs -f worker
+
+  docker:logs:flower:
+    desc: Stream Flower logs only
+    cmd: docker compose logs -f flower
 
   # ── Shell access ──────────────────────────────────────────────────────────
   docker:shell:api:
-    desc: Open a bash shell inside the api container
+    desc: Open bash inside api container
     cmd: docker compose exec api bash
 
+  docker:shell:worker:
+    desc: Open bash inside worker container
+    cmd: docker compose exec worker bash
+
   docker:shell:ui:
-    desc: Open a shell inside the ui container
+    desc: Open sh inside ui container
     cmd: docker compose exec ui sh
 
   docker:shell:db:
-    desc: Open a psql shell (shortcut for docker:db:shell)
+    desc: Open psql shell inside db container
     cmd: docker compose exec db psql -U postgres -d agentic_sdlc
 
-  # ── Status & inspection ───────────────────────────────────────────────────
+  # ── Status ────────────────────────────────────────────────────────────────
   docker:ps:
     desc: Show status of all containers
     cmd: docker compose ps
 
   docker:stats:
-    desc: Show live CPU/memory usage of all containers
+    desc: Live CPU/memory usage of all containers
     cmd: docker stats
 
   # ── Cleanup ───────────────────────────────────────────────────────────────
   docker:clean:output:
-    desc: Delete agent-generated files in output/ (affects host + container — same bind mount)
+    desc: Delete agent-generated files in output/
     cmd: find output/ -mindepth 1 -delete
     ignore_error: true
 
   docker:clean:all:
-    desc: Stop containers, clean output, clean logs
+    desc: Stop containers + clean output + clean logs
     cmds:
       - task: docker:stop
       - task: clean:output
       - task: clean:logs
 
   docker:prune:
-    desc: Remove unused Docker images, containers, networks (frees disk space)
+    desc: Remove unused Docker images, containers, networks
     cmd: docker system prune -f

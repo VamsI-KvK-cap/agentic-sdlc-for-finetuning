@@ -1,6 +1,6 @@
 import asyncio
 from dotenv import load_dotenv
-from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 import json
 import os
@@ -9,6 +9,7 @@ from web.database import get_db
 from web.executions.models import ExecutionStatus
 from web.executions.schemas import ExecutionCreate, ExecutionResponse, ExecutionListResponse
 from web.executions import crud
+from web.worker.tasks import run_agent_task
 
 
 load_dotenv()
@@ -17,95 +18,6 @@ working_dir = os.getenv("WORKING_DIR")
 # APIRouter instance; mounted under a prefix (e.g. /api/v1) in main.py
 # All routes defined here will be prefixed accordingly when included in main.py
 router = APIRouter()
-
-
-# ---------------------------------------------------------------------------
-# Background task: runs the agent and updates execution status in DB
-# ---------------------------------------------------------------------------
-
-async def _run_agent_task(execution_id: int, agent_name: str, task: str) -> None:
-    """
-    Background coroutine that drives the full agent execution lifecycle.
-
-    Scheduled by FastAPI's BackgroundTasks after POST /executions returns 202.
-    Manages three DB state transitions independently, each in its own
-    short-lived session to avoid holding a connection open during the
-    (potentially long) agent run.
-
-    Lifecycle managed here:
-        PENDING → RUNNING   (Phase 1: before agent is invoked)
-        RUNNING → COMPLETED (Phase 2 success path)
-        RUNNING → FAILED    (Phase 2 failure path)
-
-    Design decisions:
-        - All imports are lazy (inside the function body) to prevent circular
-          import issues at module load time and to avoid pulling in heavy
-          ML/agent dependencies until they are actually needed.
-        - The orchestrator's ``run()`` is synchronous/blocking, so it is
-          offloaded to a thread-pool via ``run_in_executor`` to keep the
-          asyncio event loop unblocked during agent execution.
-        - Each DB interaction opens and closes its own session. Reusing a
-          single session across the agent run would hold a connection for the
-          entire duration, exhausting the pool under load.
-
-    Args:
-        execution_id (int): Primary key of the Execution row to update.
-                            Used to re-fetch the record in each session.
-        agent_name   (str): Agent identifier forwarded to the orchestrator's
-                            ``run(task, agent_name)`` interface.
-        task         (str): Free-form task description forwarded to the
-                            orchestrator alongside ``agent_name``.
-
-    Returns:
-        None. All results are persisted to the DB via status transitions.
-
-    Raises:
-        Exception: Re-raises any exception thrown by the orchestrator after
-                   persisting the FAILED status, so FastAPI's BackgroundTasks
-                   infrastructure can log the full traceback.
-    """
-    # Lazy imports: deferred until task runs to prevent circular import issues
-    # and avoid loading heavy modules at startup
-    from web.database import AsyncSessionLocal
-    from web.executions import crud as _crud           # scoped alias to avoid shadowing the module-level `crud`
-    from web.executions.models import ExecutionStatus
-
-    # --- Phase 1: Transition execution state to RUNNING ---
-    async with AsyncSessionLocal() as db:              # short-lived session; closed immediately after status update
-        execution = await _crud.get_execution(db, execution_id)
-        if not execution:
-            return                                     # record deleted between POST and task pickup; bail silently to avoid KeyError
-        await _crud.update_execution_status(db, execution, ExecutionStatus.RUNNING)
-
-    try:
-        # ----------------------------------------------------------------
-        # Delegate to the orchestrator_agent.
-        # The orchestrator is expected to expose a `run(task, agent_name)`
-        # interface.
-        # ----------------------------------------------------------------
-        from src.agents.orchestrator_agent.orchestrator_agent import run  # lazy; avoids loading ML deps at startup
-
-        work_dir = os.path.join(working_dir, str(execution_id))
-        loop = asyncio.get_event_loop()
-        # run() is synchronous (blocking); run_in_executor offloads it to the
-        # default ThreadPoolExecutor so the event loop stays free for other
-        # requests during the (potentially long) agent execution
-        await loop.run_in_executor(None, run, task, agent_name, work_dir, execution_id)  # None → use default ThreadPoolExecutor
-
-        # --- Phase 2 (success path): Agent returned cleanly → mark COMPLETED ---
-        async with AsyncSessionLocal() as db:          # fresh session; prior session already closed before agent ran
-            execution = await _crud.get_execution(db, execution_id)
-            await _crud.update_execution_status(db, execution, ExecutionStatus.COMPLETED)
-
-    except Exception as exc:
-        # --- Phase 2 (failure path): Agent raised → persist error → mark FAILED ---
-        async with AsyncSessionLocal() as db:          # separate session; guarantees DB write even if agent session was corrupted
-            execution = await _crud.get_execution(db, execution_id)
-            await _crud.update_execution_status(
-                db, execution, ExecutionStatus.FAILED,
-                error_message=str(exc),                # str(exc) captures the root cause; full traceback goes to server logs via re-raise
-            )
-        raise                                          # re-raise so BackgroundTasks infrastructure logs the full traceback
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +71,6 @@ def _sse_event(data: dict) -> str:
 @router.post("/executions", response_model=ExecutionResponse, status_code=202)
 async def create_execution(
     payload: ExecutionCreate,
-    background_tasks: BackgroundTasks,                 # FastAPI's built-in fire-and-forget mechanism; task runs after response is sent
     db: AsyncSession = Depends(get_db),                # request-scoped DB session injected via FastAPI dependency
 ) -> ExecutionResponse:
     """
@@ -172,10 +83,6 @@ async def create_execution(
     Args:
         payload          (ExecutionCreate):  Validated request body containing
                                              ``agent_name`` and ``task``.
-        background_tasks (BackgroundTasks):  FastAPI dependency; used to schedule
-                                             ``_run_agent_task`` after the response
-                                             is sent so the HTTP round-trip is not
-                                             blocked by agent execution.
         db               (AsyncSession):     Request-scoped async DB session injected
                                              by FastAPI via the ``get_db`` dependency.
 
@@ -189,12 +96,23 @@ async def create_execution(
         SQLAlchemyError: If the INSERT to create the execution record fails.
     """
     execution = await crud.create_execution(db, payload)   # INSERT row with status=PENDING; assigns id and timestamps
-    background_tasks.add_task(                             # enqueues task to run AFTER the 202 response is sent to the client
-        _run_agent_task,
+    # CONCEPT: .delay() is non-blocking — it sends the task message to Redis
+    # and returns immediately with an AsyncResult. We don't await or store it
+    # because our source of truth for execution state is PostgreSQL, not Redis.
+    #
+    # The worker will:
+    #   1. Pick up the message from Redis
+    #   2. Call run_agent_task(execution_id, agent_name, task)
+    #   3. Update PostgreSQL as it progresses (RUNNING → COMPLETED/FAILED)
+    #
+    # Arguments must be JSON-serialisable (int and str ✓).
+    # Do NOT pass ORM objects — they can't be serialised to JSON.
+    run_agent_task.delay(
         execution_id=execution.id,
         agent_name=execution.agent_name,
         task=execution.task,
     )
+
     return execution                                       # serialised as ExecutionResponse; client polls GET /executions/{id}
 
 

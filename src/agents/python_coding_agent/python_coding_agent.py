@@ -4,13 +4,6 @@ from langgraph.graph import StateGraph, MessagesState, START, END
 from .prompt.python_coding_agent_prompt import Python_Coding_Prompt
 from typing import Dict
 from typing_extensions import TypedDict
-from codecarbon import EmissionsTracker
-
-tracker = EmissionsTracker(
-    project_name="agentic_sdlc",
-    output_dir="/home/wahaj/study/product_WJ/emissions",
-    log_level="info"
-)
 
 llm = ChatOpenAI(
     base_url= "http://localhost:8080/v1",
@@ -40,8 +33,5 @@ build.add_edge("assisstant", END)
 graph = build.compile()
 
 # input_message = HumanMessage(content="Write a hello world program")
-tracker.start()
 result = graph.invoke({"task": "Write a hello world program"})
 print(result)
-
-tracker.stop()
