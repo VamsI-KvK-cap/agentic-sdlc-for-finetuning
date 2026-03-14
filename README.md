@@ -61,10 +61,15 @@ agentic-sdlc/
 │   └── lib/                            # API client, types, hooks, utilities
 │
 ├── tests/
-├── output/                             # Agent-generated code output
-├── Taskfile.yml                        # Dev task shortcuts
-├── .env.example
-├── docker-compose.yml
+├── output/                             # Agent-generated code output (persistent)
+├── logs/                               # Application logs (persistent)
+├── data/                               # Shared data directory (persistent)
+├── Taskfile.yml                        # Dev task shortcuts (local + Docker)
+├── docker-compose.yml                  # Full stack container orchestration
+├── Dockerfile.api                      # FastAPI container image
+├── Dockerfile.ui                       # Next.js container image
+├── .env.example                        # Local environment template
+├── .env.docker.example                 # Docker environment template
 └── pyproject.toml
 ```
 
@@ -108,19 +113,32 @@ coder → reviewer → writer → static_check → END
 | Icons | [Lucide React](https://lucide.dev) |
 | Real-time | SSE (Server-Sent Events) |
 
+### Infrastructure
+| Layer | Technology |
+|---|---|
+| Containerisation | [Docker](https://www.docker.com) + [Docker Compose](https://docs.docker.com/compose/) |
+| Message broker | [Redis 7](https://redis.io) (ready for Phase 2 Celery workers) |
+| Task runner | [Task](https://taskfile.dev) |
+
 ---
 
 ## Prerequisites
 
-- **Python** 3.11+
+### Local Development
+- **Python** 3.12+
 - **Node.js** 18+ and npm
 - **PostgreSQL** 14+
 - **uv** — `pip install uv`
 - **Task** (optional) — `sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b ~/.local/bin`
 
+### Docker Setup
+- **Docker** 24+ — [Install Docker](https://docs.docker.com/get-docker/)
+- **Docker Compose** v2+ (included with Docker Desktop)
+- No Python, Node, or PostgreSQL needed on your host machine
+
 ---
 
-## Full Setup Guide
+## Option A — Local Development Setup
 
 ### 1. Clone the repo
 
@@ -132,11 +150,8 @@ cd agentic-sdlc
 ### 2. Python environment
 
 ```bash
-# Create and activate virtual environment
 uv venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
-
-# Install all Python dependencies from lockfile
 uv sync
 ```
 
@@ -155,72 +170,124 @@ ANTHROPIC_API_KEY=sk-ant-...
 ### 4. Set up PostgreSQL
 
 ```bash
-# Start PostgreSQL
 sudo service postgresql start
-
-# Create the database
 sudo -u postgres psql -c "CREATE DATABASE agentic_sdlc;"
-
-# Set postgres user password if needed
 sudo -u postgres psql -c "ALTER USER postgres WITH PASSWORD 'your_password';"
 ```
 
 ### 5. Run database migrations
 
 ```bash
-cd web
-python -m alembic upgrade head
-cd ..
+cd web && python -m alembic upgrade head && cd ..
 ```
 
-### 6. Start the backend API
+### 6. Start the backend
 
 ```bash
-# Bind to 0.0.0.0 so the frontend can reach it (important for WSL2)
 python -m uvicorn web.main:app --reload --host 0.0.0.0
 ```
 
-API is now running at `http://localhost:8000`
-- Swagger UI: `http://localhost:8000/docs`
-- Health check: `http://localhost:8000/health`
+API running at `http://localhost:8000` — Swagger UI at `http://localhost:8000/docs`
 
-### 7. Set up the frontend
+### 7. Set up and start the frontend
 
 ```bash
-cd ui
-npm install
+cd ui && npm install
 ```
 
-Configure the API URL in `ui/.env.local`:
+Create `ui/.env.local`:
 ```env
-# Use 127.0.0.1 or your WSL2 IP if running on Windows + WSL2
 NEXT_PUBLIC_API_URL=http://127.0.0.1:8000
 ```
 
-> **WSL2 users:** If `127.0.0.1` doesn't work, find your WSL2 IP with:
+```bash
+npm run dev
+```
+
+UI running at `http://localhost:3000`
+
+> **WSL2 users:** If `127.0.0.1` doesn't work, use your WSL2 IP instead:
 > ```bash
 > ip addr show eth0 | grep "inet " | awk '{print $2}' | cut -d/ -f1
 > ```
 > Use that IP in `ui/.env.local` and add it to `allow_origins` in `web/main.py`.
-> Also fix DNS if npm install times out:
+> If `npm install` times out, fix DNS first:
 > ```bash
 > echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf
 > ```
 
-### 8. Start the frontend
+---
+
+## Option B — Docker Setup (Recommended)
+
+Runs the full stack in containers — no local Python, Node, or PostgreSQL required.
+
+### 1. Clone the repo
 
 ```bash
-cd ui
-npm run dev
+git clone https://github.com/WahajSayyed/agentic-sdlc.git
+cd agentic-sdlc
 ```
 
-UI is now running at `http://localhost:3000`
+### 2. Configure Docker environment
+
+```bash
+cp .env.docker.example .env.docker
+```
+
+Edit `.env.docker` — the key values to set:
+```env
+ANTHROPIC_API_KEY=sk-ant-...
+NEXT_PUBLIC_API_URL=http://<YOUR_WSL2_IP>:8000
+```
+
+> **WSL2 users:** The browser runs on Windows so `localhost` doesn't reach the WSL2 network.
+> Find your WSL2 IP:
+> ```bash
+> ip addr show eth0 | grep "inet " | awk '{print $2}' | cut -d/ -f1
+> ```
+> Use that IP for `NEXT_PUBLIC_API_URL`. Also add it to `allow_origins` in `web/main.py`.
+>
+> **Permanent fix** — enable mirrored networking in `C:\Users\<you>\.wslconfig`:
+> ```ini
+> [wsl2]
+> networkingMode=mirrored
+> ```
+> Then `wsl --shutdown` and restart. After this `localhost` works everywhere.
+
+### 3. Start all containers
+
+```bash
+docker compose --env-file .env.docker up --build
+```
+
+Or using Task:
+```bash
+task docker:up
+```
+
+This starts: **PostgreSQL** · **Redis** · **FastAPI API** · **Next.js UI**
+
+### 4. Run database migrations
+
+```bash
+docker compose exec api python -m alembic upgrade head
+```
+
+Or:
+```bash
+task docker:db:migrate
+```
+
+### 5. Open the UI
+
+```
+http://localhost:3000
+```
 
 ---
 
-## Running Both Servers
-
-Open two terminals:
+## Running Both Servers (Local)
 
 ```bash
 # Terminal 1 — Backend
@@ -228,8 +295,7 @@ source .venv/bin/activate
 python -m uvicorn web.main:app --reload --host 0.0.0.0
 
 # Terminal 2 — Frontend
-cd ui
-npm run dev
+cd ui && npm run dev
 ```
 
 ---
@@ -292,19 +358,65 @@ curl -N http://localhost:8000/api/v1/executions/1/stream
 
 ---
 
-## Taskfile Shortcuts
+## Taskfile Reference
+
+### Local Dev Tasks
 
 ```bash
-task serve          # Start FastAPI backend
-task db:migrate     # Run Alembic migrations
-task db:rollback    # Rollback last migration
-task db:reset       # Drop and recreate database (destructive)
-task db:clean       # Truncate executions table, reset ID counter
-task clean:output   # Delete all files under output/
-task clean:all      # Truncate DB + delete output files
-task clean:logs     # Delete log files
-task setup          # First-time setup: create DB + run migrations
-task test           # Run pytest
+task serve              # Start FastAPI backend locally
+task serve:ui           # Start Next.js frontend locally
+task db:migrate         # Run Alembic migrations (local DB)
+task db:rollback        # Rollback last migration (local DB)
+task db:reset           # Drop and recreate local DB (destructive)
+task db:clean           # Truncate executions table (local DB)
+task clean:output       # Delete all files under output/
+task clean:logs         # Delete log files
+task clean:all          # Clean output + truncate DB
+task test               # Run pytest
+task install            # Install Python dependencies via uv sync
+task setup              # First-time setup: create DB + run migrations
+```
+
+### Docker Tasks
+
+```bash
+# Lifecycle
+task docker:up          # Build images and start all containers (foreground)
+task docker:up:d        # Build images and start all containers (background)
+task docker:start       # Start containers without rebuilding
+task docker:stop        # Stop all containers (keeps data)
+task docker:down        # Stop containers and delete all volumes (destructive)
+task docker:restart     # Restart all containers
+
+# Building
+task docker:build       # Build all images
+task docker:build:api   # Rebuild API image only
+task docker:build:ui    # Rebuild UI image only
+
+# Database
+task docker:db:migrate  # Run migrations inside api container
+task docker:db:rollback # Rollback last migration
+task docker:db:clean    # Truncate executions table
+task docker:db:reset    # Drop and recreate DB (destructive)
+task docker:db:shell    # Open psql shell in db container
+
+# Logs
+task docker:logs        # Stream logs from all containers
+task docker:logs:api    # Stream API logs only
+task docker:logs:ui     # Stream UI logs only
+task docker:logs:db     # Stream DB logs only
+
+# Shell access
+task docker:shell:api   # bash inside api container
+task docker:shell:ui    # sh inside ui container
+
+# Status
+task docker:ps          # Show container status
+task docker:stats       # Live CPU/memory usage
+
+# Cleanup
+task docker:clean:all   # Stop containers + clean output + clean logs
+task docker:prune       # Remove unused Docker images and networks
 ```
 
 ---
@@ -334,9 +446,12 @@ The agent automatically appears in the UI dropdown and `GET /api/v1/agents` — 
 - [x] FastAPI execution tracking with PostgreSQL
 - [x] SSE live execution stream
 - [x] Next.js dashboard UI (all pages)
+- [x] Docker Compose full-stack setup
+- [ ] Celery + Redis task queue (Phase 2)
+- [ ] Langfuse tracing — self-hosted (Phase 3)
+- [ ] Prometheus + Grafana metrics (Phase 3)
 - [ ] JavaScript / Go agents
 - [ ] Chat interface with RAG
 - [ ] LangGraph long-term memory for chat sessions
 - [ ] Settings persistence to database
-- [ ] Docker Compose full-stack setup
-- [ ] CI/CD pipeline
+- [ ] CI/CD pipeline with GitHub Actions

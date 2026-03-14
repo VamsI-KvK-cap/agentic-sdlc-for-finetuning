@@ -1,0 +1,195 @@
+# ─────────────────────────────────────────────────────────────
+# docker-compose.yml
+#
+# CONCEPT: This file defines your entire stack as code.
+# One command starts everything: docker compose up
+# One command stops everything: docker compose down
+#
+# Services defined here:
+#   db       → PostgreSQL 14
+#   redis    → Redis 7 (ready for Celery in Phase 2)
+#   api      → FastAPI backend
+#   worker   → Celery worker stub (Phase 2)
+#   ui       → Next.js frontend
+# ─────────────────────────────────────────────────────────────
+
+services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────
+  # CONCEPT: We use an official image from Docker Hub.
+  # Docker Hub hosts thousands of pre-built images.
+  # "postgres:14" means PostgreSQL version 14.
+  # Environment variables configure the database on first startup.
+  db:
+    image: postgres:14
+    container_name: agentic_db
+    restart: unless-stopped       # restart on crash, not on manual docker stop
+    environment:
+      POSTGRES_DB: agentic_sdlc
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      # Named volume — Docker manages this storage internally.
+      # Your database survives container restarts/rebuilds.
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      # HOST:CONTAINER — expose pg on localhost:5433 to avoid
+      # conflicting with any PostgreSQL already running on your machine.
+      - "5433:5432"
+    networks:
+      - agentic_net
+    healthcheck:
+      # pg_isready checks if PostgreSQL is accepting connections.
+      # Other services use condition: service_healthy to wait for this.
+      test: ["CMD-SHELL", "pg_isready -U postgres -d agentic_sdlc"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ── Redis ───────────────────────────────────────────────────
+  # CONCEPT: Redis is an in-memory key-value store.
+  # We use it as a message broker for Celery (Phase 2).
+  # It's also useful for caching and session storage.
+  # "redis:7-alpine" — alpine keeps the image tiny (~30MB).
+  redis:
+    image: redis:7-alpine
+    container_name: agentic_redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - agentic_net
+    healthcheck:
+      # redis-cli ping returns PONG if Redis is healthy
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── FastAPI Backend ─────────────────────────────────────────
+  # CONCEPT: "build" tells Compose to build from a Dockerfile
+  # rather than pulling a pre-built image from Docker Hub.
+  # context: . means use the project root as build context.
+  # dockerfile: points to our Dockerfile.api.
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: agentic_api
+    restart: unless-stopped
+    env_file:
+      # Load all variables from .env.docker.
+      # These override anything set in environment: below.
+      - .env.docker
+    environment:
+      # Explicitly set DB URL using the "db" service name as host.
+      # CONCEPT: Inside Docker network, services reach each other
+      # by service name. "localhost" would mean the container itself.
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/agentic_sdlc
+    volumes:
+      # CONCEPT: Bind mounts for hot reload.
+      # Mounting source code means edits on your host are
+      # instantly visible inside the container — no rebuild needed.
+      - ./src:/app/src
+      - ./web:/app/web
+      # Persistent output and logs — survive container restarts.
+      # Left side = your host path, Right side = container path.
+      - ./output:/app/output
+      - ./logs:/app/logs
+      - ./data:/app/data
+    ports:
+      - "8000:8000"
+    networks:
+      - agentic_net
+    depends_on:
+      db:
+        # CONCEPT: condition: service_healthy waits until the
+        # db healthcheck passes — not just until the container starts.
+        # Without this, api might start before PostgreSQL is ready
+        # and fail with "connection refused".
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ── Celery Worker (stub for Phase 2) ───────────────────────
+  # CONCEPT: A worker is a separate process that picks up jobs
+  # from a queue and executes them. It uses the same codebase
+  # as the API but runs a different command (celery instead of uvicorn).
+  # We define it now so the architecture is clear — it's commented
+  # out until Phase 2 when we set up Celery properly.
+  #
+  # worker:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.api       # same image as api
+  #   container_name: agentic_worker
+  #   restart: unless-stopped
+  #   env_file:
+  #     - .env.docker
+  #   command: celery -A web.worker worker --loglevel=info
+  #   volumes:
+  #     - ./src:/app/src
+  #     - ./web:/app/web
+  #     - ./output:/app/output           # workers write generated code here
+  #     - ./logs:/app/logs
+  #   networks:
+  #     - agentic_net
+  #   depends_on:
+  #     db:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+
+  # ── Next.js Frontend ────────────────────────────────────────
+  ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.ui
+    container_name: agentic_ui
+    restart: unless-stopped
+    environment:
+      # CONCEPT: Inside Docker the browser still runs on your HOST,
+      # not inside a container. So the API URL must be reachable
+      # from your host browser — localhost:8000 works because
+      # we published the api port above.
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+      NEXT_TELEMETRY_DISABLED: 1
+    volumes:
+      # Hot reload — mount source code so edits reflect immediately
+      - ./ui:/app
+      # CONCEPT: Anonymous volume for node_modules.
+      # Without this, the bind mount above would overwrite the
+      # node_modules installed during docker build with your
+      # (possibly missing) local node_modules.
+      # This tells Docker: use the node_modules from the image,
+      # not from the host.
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    networks:
+      - agentic_net
+    depends_on:
+      - api
+
+# ── Volumes ────────────────────────────────────────────────────
+# CONCEPT: Named volumes are managed by Docker.
+# They persist across container restarts and rebuilds.
+# Data is stored in Docker's internal storage area.
+# Use "docker volume ls" to see them, "docker volume rm" to delete.
+volumes:
+  postgres_data:
+    name: agentic_postgres_data
+  redis_data:
+    name: agentic_redis_data
+
+# ── Networks ───────────────────────────────────────────────────
+# CONCEPT: A bridge network creates a private LAN between containers.
+# Containers on the same network can reach each other by service name.
+# Containers on different networks are completely isolated.
+networks:
+  agentic_net:
+    name: agentic_network
+    driver: bridge

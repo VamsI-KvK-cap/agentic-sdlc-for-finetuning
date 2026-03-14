@@ -1,0 +1,38 @@
+# ─────────────────────────────────────────────────────────────
+# Dockerfile.ui
+# Builds the Next.js frontend image (development mode).
+#
+# CONCEPT: We use node:18-alpine not node:18.
+# "alpine" is a minimal Linux distro (5MB vs 200MB for full Ubuntu).
+# It's the standard base for Node containers.
+#
+# For production you'd use a multi-stage build:
+#   Stage 1 (builder): npm install + npm run build
+#   Stage 2 (runner):  copy .next/standalone, run node server.js
+# We skip that for now to keep hot-reload working during development.
+# ─────────────────────────────────────────────────────────────
+
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Install dependencies first (cached layer).
+# COPY package files before source — same caching principle as Dockerfile.api.
+COPY ui/package*.json ./
+
+# Install dependencies
+RUN npm install
+
+# Copy the rest of the UI source code
+COPY ui/ .
+
+# Expose Next.js dev server port
+EXPOSE 3000
+
+# CONCEPT: NEXT_TELEMETRY_DISABLED
+# Next.js collects anonymous usage data by default.
+# This env var disables it — good practice in any container.
+ENV NEXT_TELEMETRY_DISABLED=1
+
+# Start Next.js in development mode with hot reload
+CMD ["npm", "run", "dev"]

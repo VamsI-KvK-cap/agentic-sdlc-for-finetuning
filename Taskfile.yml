@@ -2,65 +2,202 @@ version: '3'
 
 tasks:
 
+  # ════════════════════════════════════════════════════════════
+  # LOCAL DEV — runs directly on your machine (no Docker)
+  # ════════════════════════════════════════════════════════════
+
   # ── Server ────────────────────────────────────────────────────────────────
   serve:
-    desc: Start the FastAPI dev server
-    cmd: python -m uvicorn web.main:app --reload
+    desc: Start the FastAPI dev server locally
+    cmd: python -m uvicorn web.main:app --reload --host 0.0.0.0
 
-  # ── Database ──────────────────────────────────────────────────────────────
+  serve:ui:
+    desc: Start the Next.js dev server locally
+    dir: ui
+    cmd: npm run dev
+
+  # ── Database (local PostgreSQL) ───────────────────────────────────────────
   db:migrate:
-    desc: Run Alembic migrations
+    desc: Run Alembic migrations (local DB)
     dir: web
     cmd: python -m alembic upgrade head
 
   db:rollback:
-    desc: Rollback last Alembic migration
+    desc: Rollback last Alembic migration (local DB)
     dir: web
     cmd: python -m alembic downgrade -1
 
   db:reset:
-    desc: Drop and recreate the agentic_sdlc database (WARNING - destroys all data)
+    desc: Drop and recreate the local agentic_sdlc database (WARNING — destroys all data)
     cmds:
       - sudo -u postgres psql -c "DROP DATABASE IF EXISTS agentic_sdlc;"
       - sudo -u postgres psql -c "CREATE DATABASE agentic_sdlc;"
       - task: db:migrate
 
   db:clean:
-    desc: Truncate the executions table (keeps schema intact)
+    desc: Truncate the executions table (local DB, keeps schema intact)
     cmd: sudo -u postgres psql -d agentic_sdlc -c "TRUNCATE TABLE executions RESTART IDENTITY;"
 
-  # ── Output ────────────────────────────────────────────────────────────────
+  # ── Output / Logs ─────────────────────────────────────────────────────────
   clean:output:
     desc: Delete all agent-generated files under output/
     cmd: find output/ -mindepth 1 -delete
     ignore_error: true
 
-  # ── Combined cleanup ──────────────────────────────────────────────────────
-  clean:all:
-    desc: Clean output folder + truncate executions table
-    cmds:
-      - task: clean:output
-      - task: db:clean
-
-  # ── Logs ──────────────────────────────────────────────────────────────────
   clean:logs:
     desc: Clear log files under logs/
     cmd: find logs/ -name "*.log" -delete
     ignore_error: true
 
+  clean:all:
+    desc: Clean output folder + truncate executions table (local)
+    cmds:
+      - task: clean:output
+      - task: db:clean
+
   # ── Tests ─────────────────────────────────────────────────────────────────
   test:
-    desc: Run tests
+    desc: Run pytest test suite
     cmd: python -m pytest tests/ -v
 
-  # ── Install ───────────────────────────────────────────────────────────────
-  install:
-    desc: Install all dependencies
-    cmd: uv add fastapi uvicorn sqlalchemy asyncpg alembic pydantic python-dotenv
-
-  # ── Setup (first time) ────────────────────────────────────────────────────
+  # ── Setup (first time local) ──────────────────────────────────────────────
   setup:
-    desc: Full first-time setup — create DB, run migrations
+    desc: First-time local setup — create DB and run migrations
     cmds:
       - sudo -u postgres psql -c "CREATE DATABASE agentic_sdlc;"
       - task: db:migrate
+
+  install:
+    desc: Install all Python dependencies from lockfile
+    cmd: uv sync
+
+
+  # ════════════════════════════════════════════════════════════
+  # DOCKER — runs the full stack in containers
+  # ════════════════════════════════════════════════════════════
+
+  # ── Core lifecycle ────────────────────────────────────────────────────────
+  docker:up:
+    desc: Build images and start all containers (foreground)
+    cmd: docker compose --env-file .env.docker up --build
+
+  docker:up:d:
+    desc: Build images and start all containers (detached / background)
+    cmd: docker compose --env-file .env.docker up --build -d
+
+  docker:start:attached:
+    desc: Start containers without rebuilding (assumes images exist)
+    cmd: docker compose --env-file .env.docker up
+
+  docker:start:
+    desc: Start containers without rebuilding (assumes images exist)
+    cmd: docker compose --env-file .env.docker up -d
+
+  docker:stop:
+    desc: Stop all running containers (keeps volumes and data)
+    cmd: docker compose down
+
+  docker:down:
+    desc: Stop containers and remove volumes — WARNING destroys all DB data
+    cmd: docker compose down -v
+
+  docker:restart:
+    desc: Restart all containers
+    cmd: docker compose --env-file .env.docker restart
+
+  # ── Building ──────────────────────────────────────────────────────────────
+  docker:build:
+    desc: Build all Docker images without starting containers
+    cmd: docker compose --env-file .env.docker build
+
+  docker:build:api:
+    desc: Rebuild only the API image
+    cmd: docker compose --env-file .env.docker build api
+
+  docker:build:ui:
+    desc: Rebuild only the UI image
+    cmd: docker compose --env-file .env.docker build ui
+
+  # ── Database (Docker PostgreSQL) ──────────────────────────────────────────
+  docker:db:migrate:
+    desc: Run Alembic migrations inside the api container
+    cmd: docker compose exec api python -m alembic upgrade head
+
+  docker:db:rollback:
+    desc: Rollback last migration inside the api container
+    cmd: docker compose exec api python -m alembic downgrade -1
+
+  docker:db:clean:
+    desc: Truncate executions table in Docker PostgreSQL
+    cmd: docker compose exec db psql -U postgres -d agentic_sdlc -c "TRUNCATE TABLE executions RESTART IDENTITY;"
+
+  docker:db:reset:
+    desc: Drop and recreate database in Docker PostgreSQL (WARNING — destroys all data)
+    cmds:
+      - docker compose exec db psql -U postgres -c "DROP DATABASE IF EXISTS agentic_sdlc;"
+      - docker compose exec db psql -U postgres -c "CREATE DATABASE agentic_sdlc;"
+      - task: docker:db:migrate
+
+  docker:db:shell:
+    desc: Open a psql shell inside the Docker PostgreSQL container
+    cmd: docker compose exec db psql -U postgres -d agentic_sdlc
+
+  # ── Logs ──────────────────────────────────────────────────────────────────
+  docker:logs:
+    desc: Stream logs from all containers
+    cmd: docker compose logs -f
+
+  docker:logs:api:
+    desc: Stream logs from the api container only
+    cmd: docker compose logs -f api
+
+  docker:logs:ui:
+    desc: Stream logs from the ui container only
+    cmd: docker compose logs -f ui
+
+  docker:logs:db:
+    desc: Stream logs from the db container only
+    cmd: docker compose logs -f db
+
+  docker:logs:worker:
+    desc: Stream logs from the worker container only (Phase 2)
+    cmd: docker compose logs -f worker
+
+  # ── Shell access ──────────────────────────────────────────────────────────
+  docker:shell:api:
+    desc: Open a bash shell inside the api container
+    cmd: docker compose exec api bash
+
+  docker:shell:ui:
+    desc: Open a shell inside the ui container
+    cmd: docker compose exec ui sh
+
+  docker:shell:db:
+    desc: Open a psql shell (shortcut for docker:db:shell)
+    cmd: docker compose exec db psql -U postgres -d agentic_sdlc
+
+  # ── Status & inspection ───────────────────────────────────────────────────
+  docker:ps:
+    desc: Show status of all containers
+    cmd: docker compose ps
+
+  docker:stats:
+    desc: Show live CPU/memory usage of all containers
+    cmd: docker stats
+
+  # ── Cleanup ───────────────────────────────────────────────────────────────
+  docker:clean:output:
+    desc: Delete agent-generated files in output/ (affects host + container — same bind mount)
+    cmd: find output/ -mindepth 1 -delete
+    ignore_error: true
+
+  docker:clean:all:
+    desc: Stop containers, clean output, clean logs
+    cmds:
+      - task: docker:stop
+      - task: clean:output
+      - task: clean:logs
+
+  docker:prune:
+    desc: Remove unused Docker images, containers, networks (frees disk space)
+    cmd: docker system prune -f

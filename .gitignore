@@ -9,6 +9,7 @@ wheels/
 # Virtual environments
 .venv
 .env
+.env.docker
 .ruff_cache
 emissions/*
 !emissions/.gitkeep

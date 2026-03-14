@@ -1,0 +1,81 @@
+# ─────────────────────────────────────────────────────────────
+# Dockerfile.api
+# Builds the FastAPI + LangGraph backend image.
+#
+# CONCEPT: Multi-stage thinking
+#   We use python:3.12-slim (not full python:3.12) to keep the
+#   image small. "slim" strips out compilers, docs, test tools.
+#   Smaller image = faster pull, less attack surface.
+# ─────────────────────────────────────────────────────────────
+
+FROM python:3.12-slim
+
+# Set working directory inside the container.
+# All subsequent COPY/RUN commands are relative to this.
+WORKDIR /app
+
+# Install system dependencies needed to compile some Python packages.
+# We combine all apt commands into one RUN to create a single layer
+# and clean up apt cache to keep image size down.
+RUN apt-get update && apt-get install -y \
+    gcc \
+    libpq-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv — our package manager.
+# We install it via pip once, then use it for everything else.
+RUN pip install uv --no-cache-dir
+
+# CONCEPT: Dependency caching
+# Copy ONLY the dependency files first. Docker will cache this layer
+# and only re-run `uv sync` when pyproject.toml or uv.lock changes.
+# If we copied all source code first, every code change would
+# trigger a full dependency reinstall — very slow.
+COPY pyproject.toml .
+COPY uv.lock* .
+
+# Install dependencies (excluding codecarbon — heavy + unnecessary in Docker)
+# --system installs into the system Python, not a venv (we're already isolated)
+# --no-dev skips development-only dependencies
+RUN uv sync --no-dev --system || uv pip install --system \
+    fastapi \
+    uvicorn \
+    sqlalchemy \
+    asyncpg \
+    alembic \
+    pydantic \
+    python-dotenv \
+    langgraph \
+    langgraph-prebuilt \
+    langchain-core \
+    langchain-openai \
+    ruff \
+    anthropic
+
+# Now copy the actual source code.
+# This layer rebuilds on every code change, but dependency
+# layers above are cached so it's fast.
+COPY src/ ./src/
+COPY web/ ./web/
+
+# Create persistent directories.
+# These will be bind-mounted to your host machine via docker-compose volumes.
+RUN mkdir -p /app/output /app/logs /app/data
+
+# Expose the port the API listens on.
+# CONCEPT: EXPOSE is documentation — it doesn't actually publish the port.
+# Port publishing happens in docker-compose.yml with "ports:".
+EXPOSE 8000
+
+# CONCEPT: Health check
+# Docker periodically runs this command inside the container.
+# If it fails repeatedly, Docker marks the container "unhealthy".
+# Other services can use depends_on with condition: service_healthy.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# The command that runs when the container starts.
+# --host 0.0.0.0 binds to all interfaces (required in Docker)
+# --reload watches for file changes (hot reload for development)
+CMD ["uvicorn", "web.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
