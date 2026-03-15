@@ -21,6 +21,7 @@ RUN apt-get update && apt-get install -y \
     gcc \
     libpq-dev \
     curl \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv — our package manager.
@@ -64,7 +65,13 @@ RUN uv pip install --system \
     langchain-openai \
     "celery[redis]" \
     ruff \
-    anthropic
+    anthropic \
+    langchain_google_genai \
+    google-generativeai \
+    python-multipart
+
+# python-multipart is required by FastAPI for Form() and File() (multipart uploads).
+# Without it, POST /executions/from-zip returns a 422 with a confusing error.
 
 # Now copy the actual source code.
 # This layer rebuilds on every code change, but dependency

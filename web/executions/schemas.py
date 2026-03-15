@@ -48,6 +48,35 @@ class ExecutionCreate(BaseModel):
     )
 
 
+class ExecutionFromGitCreate(BaseModel):
+    """
+    Request body schema for POST /executions/from-git (brownfield — Git repo).
+
+    CONCEPT: Brownfield development means working with an existing codebase
+    rather than starting from scratch (greenfield). The agent will read the
+    existing file structure from work_dir before planning changes.
+
+    The git_url is cloned into output/{execution_id}/ before the Celery
+    task starts, so the agent's planner sees the full repo on its first run.
+
+    Attributes:
+        agent_name: Agent to invoke (e.g. "python").
+        task:       What needs to be changed/added in the existing repo.
+        git_url:    Public HTTPS Git URL. SSH and private repos not supported.
+                    Validated as a proper URL by Pydantic's HttpUrl type.
+
+    Example payload:
+        {
+            "agent_name": "python",
+            "task": "Add input validation to all API endpoints",
+            "git_url": "https://github.com/user/my-repo"
+        }
+    """
+    agent_name: str = Field(..., description="Name of the agent to run")
+    task: str       = Field(..., description="What to change in the existing codebase")
+    git_url: str    = Field(..., description="Public HTTPS Git URL to clone")
+
+
 class ExecutionResponse(BaseModel):
     """
     Response schema for a single Execution record.
