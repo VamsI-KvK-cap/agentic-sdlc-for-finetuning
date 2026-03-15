@@ -30,6 +30,12 @@ export interface CreateExecutionPayload {
   task: string
 }
 
+export interface CreateExecutionFromGitPayload {
+  agent_name: string
+  task: string
+  git_url: string
+}
+
 export interface ExecutionListParams {
   skip?: number
   limit?: number

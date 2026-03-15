@@ -3,7 +3,8 @@ from pydantic import BaseModel, Field
 
 
 class FilePlan(BaseModel):
-    path: str = Field(description="This is an absolute path of file where work_dir is the parent directory.")
+    # path: str = Field(description="This is an absolute path of file where work_dir is the parent directory.")
+    path: str = Field(description="This is the relative path of a file.")
     action: Literal["create", "update"]
     reason: str
     instructions: str = Field(description="""
@@ -18,7 +19,8 @@ class Plan(BaseModel):
     files: List[FilePlan]
 
 class CodeChange(BaseModel):
-    path: str = Field(description="This is an absolute path of file  where work_dir is the parent directory.")
+    # path: str = Field(description="This is an absolute path of file  where work_dir is the parent directory.")
+    path: str = Field(description="This is the relative path of file.")
     action: Literal["create", "update"]
     content: str # full new content(safe v1 design)  | In v2, you can move to diff/patch mode.
 

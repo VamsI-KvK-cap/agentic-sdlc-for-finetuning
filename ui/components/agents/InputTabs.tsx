@@ -16,10 +16,10 @@ interface Props {
   onGitUrlChange: (v: string) => void
 }
 
-const TABS: { id: InputMode; label: string; icon: React.ReactNode }[] = [
-  { id: 'text', label: 'Text',     icon: <FileText className="w-3.5 h-3.5" /> },
-  { id: 'file', label: 'File',     icon: <Upload className="w-3.5 h-3.5" /> },
-  { id: 'git',  label: 'Git URL',  icon: <GitBranch className="w-3.5 h-3.5" /> },
+const TABS: { id: InputMode; label: string; icon: React.ReactNode; hint: string }[] = [
+  { id: 'text', label: 'Text',     icon: <FileText   className="w-3.5 h-3.5" />, hint: 'Greenfield — describe a new task' },
+  { id: 'file', label: 'Zip Upload', icon: <Upload   className="w-3.5 h-3.5" />, hint: 'Brownfield — upload existing codebase as .zip' },
+  { id: 'git',  label: 'Git URL',  icon: <GitBranch  className="w-3.5 h-3.5" />, hint: 'Brownfield — clone a public Git repo' },
 ]
 
 export function InputTabs({
@@ -38,6 +38,7 @@ export function InputTabs({
           <button
             key={tab.id}
             type="button"
+            title={tab.hint}
             onClick={() => onModeChange(tab.id)}
             className={cn(
               'flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono transition-all duration-150',
@@ -52,7 +53,7 @@ export function InputTabs({
         ))}
       </div>
 
-      {/* Text input */}
+      {/* Text input — greenfield task description */}
       {mode === 'text' && (
         <textarea
           value={text}
@@ -63,13 +64,14 @@ export function InputTabs({
         />
       )}
 
-      {/* File upload */}
+      {/* Zip upload — brownfield codebase */}
       {mode === 'file' && (
         <div>
+          {/* Hidden input — accepts .zip only */}
           <input
             ref={fileRef}
             type="file"
-            accept=".txt,.md,.pdf,.docx"
+            accept=".zip,application/zip,application/x-zip-compressed"
             className="hidden"
             onChange={e => onFileChange(e.target.files?.[0] ?? null)}
           />
@@ -80,13 +82,16 @@ export function InputTabs({
                 <div>
                   <p className="text-sm font-mono text-foreground">{file.name}</p>
                   <p className="text-[11px] font-mono text-muted-fg">
-                    {(file.size / 1024).toFixed(1)} KB
+                    {(file.size / 1024).toFixed(1)} KB · zip archive
                   </p>
                 </div>
               </div>
               <button
                 type="button"
-                onClick={() => { onFileChange(null); if (fileRef.current) fileRef.current.value = '' }}
+                onClick={() => {
+                  onFileChange(null)
+                  if (fileRef.current) fileRef.current.value = ''
+                }}
                 className="text-muted-fg hover:text-danger transition-colors"
               >
                 <X className="w-3.5 h-3.5" />
@@ -103,14 +108,14 @@ export function InputTabs({
               )}
             >
               <Upload className="w-6 h-6" />
-              <span className="text-xs font-mono">Click to upload a file</span>
-              <span className="text-[11px] font-mono opacity-60">.txt · .md · .pdf · .docx</span>
+              <span className="text-xs font-mono">Click to upload your codebase</span>
+              <span className="text-[11px] font-mono opacity-60">.zip archives only</span>
             </button>
           )}
         </div>
       )}
 
-      {/* Git URL */}
+      {/* Git URL — brownfield clone */}
       {mode === 'git' && (
         <div className="space-y-2">
           <div className="relative">
@@ -124,7 +129,7 @@ export function InputTabs({
             />
           </div>
           <p className="text-[11px] font-mono text-muted-fg px-1">
-            The agent will clone and analyse the repository before generating code.
+            Public HTTPS URLs only — GitHub, GitLab, Bitbucket. The agent will do a shallow clone before planning.
           </p>
         </div>
       )}

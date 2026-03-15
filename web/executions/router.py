@@ -3,14 +3,20 @@ import io
 import zipfile
 import os
 from dotenv import load_dotenv
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 import json
 from sqlalchemy.ext.asyncio import AsyncSession
 from web.database import get_db
 from web.executions.models import ExecutionStatus
-from web.executions.schemas import ExecutionCreate, ExecutionResponse, ExecutionListResponse
+from web.executions.schemas import (
+    ExecutionCreate,
+    ExecutionFromGitCreate,
+    ExecutionResponse,
+    ExecutionListResponse,
+)
 from web.executions import crud
+from web.executions.source import extract_zip, clone_git
 from web.worker.tasks import run_agent_task
 
 
@@ -122,6 +128,26 @@ def _zip_execution_artifacts(execution_id: int) -> io.BytesIO:
 
 
 # ---------------------------------------------------------------------------
+# Shared pre-flight helper
+# ---------------------------------------------------------------------------
+
+def _prepare_work_dir(execution_id: int) -> str:
+    """
+    Create and return output/{execution_id}/ ready to receive source files.
+
+    Called by both brownfield endpoints before DB row creation.
+    If work_dir already exists (shouldn't happen, but defensive), it's
+    cleared first to avoid mixing artifacts from a previous run.
+    """
+    work_dir = os.path.join(working_dir, str(execution_id))
+    if os.path.exists(work_dir):
+        import shutil
+        shutil.rmtree(work_dir)
+    os.makedirs(work_dir, exist_ok=True)
+    return work_dir
+
+
+# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
@@ -172,6 +198,170 @@ async def create_execution(
 
     return execution                                       # serialised as ExecutionResponse; client polls GET /executions/{id}
 
+
+@router.post("/executions/from-zip", response_model=ExecutionResponse, status_code=202)
+async def create_execution_from_zip(
+    agent_name: str = Form(..., description="Agent to run (e.g. 'PythonCodingAgent')"),
+    task:       str = Form(..., description="What to change in the codebase"),
+    file:       UploadFile = File(..., description="Zip archive of the existing codebase"),
+    db: AsyncSession = Depends(get_db), 
+) -> ExecutionResponse:
+    """
+    Brownfield execution from a zip archive.
+
+    CONCEPT: multipart/form-data vs JSON body.
+    File uploads require multipart/form-data encoding - JSON cannot 
+    carry binary data. FastAPI's Form() and File() handle this automatically. The client sends one request with:
+        - agent_name and task as form fields (text)
+        - file as a file part(binary)
+
+    Flow:
+      1. Validate the upload is a zip
+      2. Create DB row to get an execution_id
+      3. Extract zip into output/{execution_id}/
+      4. Enqueue Celery task - agent finds pre-populated work_dir
+      5. Retrun 202
+
+    CONCEPT: Why create a DB row BEFORE extraction here?
+    We need execution_id to know where to extract (output/{id}/).
+    If extraction fails we mark the execution as FAILED immediately 
+    rather than leaving a ghost PENDING row.
+
+    Args:
+        agent_name: Form field - agent identifier.
+        task:       Form field - what to change in the existing code.
+        file:       Uploaded zip archive of the existing codebase.
+        db:         Request-scoped DB session.
+
+        Returns:
+            ExecutionResponse with status=PENDING
+        
+        Raises:
+            HTTPException 400: If the file upload is not a valid zip or is empty.
+            HTTPExecption 500: if extraction fails due to system error.
+    """
+    # Validate file extension early - before reading the whole file
+    if file.content_type not in ("application/zip", "application/x-zip-compressed") \
+        and not (file.filename or "").endswith(".zip"):
+        raise HTTPException(
+            status_code=400,
+            detail="Only .zip files are accepted",
+        )
+    
+    # Create DB row first to get execution_id for the work_dir path
+    payload = ExecutionCreate(agent_name=agent_name, task=task)
+    execution = await crud.create_execution(db, payload)
+
+    # Prepare work_dir using the new execution_id
+    work_dir = _prepare_work_dir(execution.id)
+
+    try:
+        file_count = await extract_zip(file, work_dir)
+    except ValueError as e:
+        # User error - bad zip, path traversal attempt etc.
+        # Mark executoin FAILED and return 400 so the UI shows a clear error.
+        await crud.update_execution_status(
+            db, execution, ExecutionStatus.FAILED,
+            error_message=str(e)
+        )
+        raise HTTPException(status=400, detail=str(e))
+    except RuntimeError as e:
+        # System error - disk full, corrupted archive etc.
+        await crud.update_execution_status(
+            db, execution, ExecutionStatus.FAILED,
+            error_message=str(e)
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+    
+    # Enqueue the agent - work_dir is already populated with the repo
+    run_agent_task.delay(
+        execution_id=execution.id,
+        agent_name=execution.agent_name,
+        task=execution.task,
+    )
+
+    return execution
+
+
+@router.post("/executions/from-git", response_model=ExecutionResponse, status_code=202)
+async def create_execution_from_git(
+    payload: ExecutionFromGitCreate,
+    db: AsyncSession = Depends(get_db),
+) -> ExecutionResponse:
+    """
+    Brownfield execution from a public Git repository.
+
+    CONCEPT: Why run git clone synchronously in the request handler?
+    Git clones can take 5-30s for large repos. We clone synchronously here (blocking the request) rather than in the 
+    Celery task because:
+
+        1. We want to return 4xx immediately if the URL is invalid
+            or the repo doesn't exist - not discover this inside the worker.
+        2. The clone result needs to exist in work_dir before the
+            worker starts, so the timing must be: clone -> enqueue.
+
+    For very large repos (>100MB) this could be slow. A future
+    improvement would be a two-step API: POST to validate/start clone,
+    GET to check clone status, then the execution auto-starts.
+    For now, the 120s timeout in clone_git() prevents indefinite hangs.
+
+    CONCEPT: run_in_executor for blocking calls.
+    clone_git() calls subprocess (blocking I/O). We run it in a thread
+    via run_in_executor so the asyncio loop stays free to handle
+    other requests during the clone.
+
+    Args:
+        payload: JSON body with agent_name, task, git_url.
+        db:      Request-scoped DB session.
+
+    Returns:
+        ExecutionResponse with status=PENDING.
+
+    Raises:
+        HTTPException 400: If git_url is invalid, repo not found, private.
+        HTTPException 500: If git is not installed or cloned fails.
+    """
+    # Create DB row first to get the execution_id
+    exec_payload = ExecutionCreate(
+        agent_name=payload.agent_name,
+        task=payload.task,
+    )
+    execution = await crud.create_execution(db, exec_payload)
+
+    work_dir = _prepare_work_dir(execution.id)
+
+    try:
+        # Run the blocking git clone in a thread so we don't block the event loop
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None,           # default ThreadPoolExecutor
+            clone_git,      # blocking function
+            payload.git_url,
+            work_dir,
+        )
+    except ValueError as e:
+        # User error - bad URL, private repo, repo not found
+        await crud.update_execution_status(
+            db, execution, ExecutionStatus.FAILED,
+            error_message=str(e)
+        )
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        # System error - git not installed, network failure
+        await crud.update_execution_status(
+            db, execution, ExecutionStatus.FAILED,
+            error_message=str(e)
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # work_dir is populated - enqueue the agent
+    run_agent_task.delay(
+        execution_id=execution.id,
+        agent_name=execution.agent_name,
+        task=execution.task,
+    )
+
+    return execution
 
 
 @router.get("/executions/{execution_id}/stream")
