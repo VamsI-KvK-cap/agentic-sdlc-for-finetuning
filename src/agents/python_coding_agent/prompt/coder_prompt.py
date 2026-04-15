@@ -1,5 +1,27 @@
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate  # Used to construct structured prompts for LLM
 
+
+"""
+Coder Prompt Definition
+
+This prompt is used by the coder node to generate production-grade Python code.
+
+Purpose:
+    - Translate file-level implementation instructions into actual code
+    - Ensure high-quality, idiomatic, and safe Python output
+    - Incorporate static analysis feedback (e.g., Ruff issues)
+    - Return complete, runnable file content
+
+Design Goals:
+    - Enforce strict adherence to implementation plan
+    - Maintain production-level coding standards
+    - Ensure code safety, correctness, and maintainability
+    - Enable structured output for automated pipelines
+
+Prompt Structure:
+    - System message → defines coding rules, standards, and responsibilities
+    - User message → injects file-specific instructions and runtime context
+"""
 
 coder_prompt = ChatPromptTemplate.from_messages([
     ("system", """

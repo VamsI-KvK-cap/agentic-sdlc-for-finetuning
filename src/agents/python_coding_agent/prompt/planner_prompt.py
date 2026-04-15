@@ -1,7 +1,33 @@
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate  # Used to construct structured LLM prompts
+
+
+"""
+Planner Prompt Definition
+
+This prompt is used by the planner node to generate a structured implementation plan.
+
+Purpose:
+    - Break down a high-level task into file-level instructions
+    - Ensure each file has self-contained implementation details
+    - Enforce structured JSON output compatible with Pydantic models
+
+Design Goals:
+    - Each file can be implemented independently
+    - Maintain modular and clean architecture
+    - Provide enough detail for downstream coder node
+
+Prompt Structure:
+    - System message → defines role and strict rules
+    - User message → provides task + repository context
+"""
+
 
 planner_prompt = ChatPromptTemplate.from_messages([
-    ("system", """
+
+    # ---------------- SYSTEM MESSAGE ----------------
+    (
+        "system",
+        """
 You are a senior Python software architect.
 
 Your job is to analyze a task and produce a precise implementation plan — one entry 
@@ -18,9 +44,13 @@ without seeing the global task.
   their signatures, inputs/outputs, edge cases, and imports from other planned files.
 - Do not bleed concerns across files — each file's instructions are self-contained.
 - Return structured JSON only.
-"""),
+"""
+    ),
 
-("user", """
+    # ---------------- USER MESSAGE ----------------
+    (
+        "user",
+        """
 ## Task
 {task}
 
@@ -34,5 +64,6 @@ without seeing the global task.
 {existing_files}
 
 {format_instructions}
-""")
+"""
+    )
 ])

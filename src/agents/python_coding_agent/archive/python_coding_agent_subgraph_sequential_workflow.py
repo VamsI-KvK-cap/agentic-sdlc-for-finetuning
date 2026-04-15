@@ -1,5 +1,5 @@
-import os, shutil, json
-import subprocess
+import os, shutil, json  # OS operations, file backup, JSON parsing
+import subprocess  # Used for running static analysis (ruff)
 from typing_extensions import TypedDict, Optional, List, Literal, Dict, Any
 from typing import Annotated
 from langchain_openai import ChatOpenAI
@@ -14,30 +14,71 @@ from src.tools.read_file_structure import read_file_structure
 from src.tools.read_file import read_file
 from src.config.logging_config import logger
 
+# Load environment variables from .env file
 load_dotenv()
+
+# Base working directory (root for all executions)
 working_dir = os.getenv("WORKING_DIR")
+
+# Retry limits for different stages
 MAX_REVIEW_RETRIES = int(os.getenv("MAX_REVIEW_RETRIES", 3))
 MAX_STATIC_CHECK_RETRIES = int(os.getenv("MAX_STATIC_CHECK_RETRIES", 3))
 
+
+# Initialize LLM (local inference server)
 llm = ChatOpenAI(
     base_url="http://localhost:8080/v1",
-    # model="Qwen2.5-7B-Instruct.Q4_0.gguf",
     model="Qwen2.5-Coder-7B-Instruct.Q4_0.gguf",
     api_key="not_needed",
-    # callbacks=[SimpleLogger()]
 )
 
+
 def append_list(existing, new):
-    """Reducer that accumulates list results from parallel subgraphs."""
+    """
+    Reducer that accumulates list results from parallel subgraphs.
+
+    Parameters:
+        existing (list | None):
+            Existing accumulated values.
+
+        new (list | None):
+            New values to append.
+
+    Returns:
+        list:
+            Combined list of existing + new values.
+
+    Notes:
+        - Used with LangGraph Annotated fields for merging outputs.
+        - Ensures safe handling of None values.
+    """
     return (existing or []) + (new or [])
 
 
 class AgentState(TypedDict):
+    """
+    Global state shared across the main workflow.
+
+    Fields:
+        execution_id (int): Unique ID for execution run
+        work_dir (str): Directory where files are generated/modified
+        task (str): User input task
+        file_structure (str): Directory structure snapshot
+        existing_files (dict): File path → content mapping
+        plan (dict): Planner output
+        code_changes (list): All changes made
+        written_files (list): Files written to disk
+        review (dict): Review results
+        static_check_success (bool): Whether lint passed
+        static_check_output (str): Raw lint output
+        feedback (str): Feedback from reviewer/static check
+        retry_count (dict): Retry counters for stages
+    """
     execution_id: int
     work_dir: str
     task: str
     file_structure: str
-    existing_files:  Optional[Dict[str, str]]  # path -> content
+    existing_files: Optional[Dict[str, str]]
     plan: Optional[Dict[str, Any]]
     code_changes: Annotated[Optional[Dict[str, Any]], append_list]
     written_files: Annotated[Optional[List[str]], append_list]
@@ -47,30 +88,57 @@ class AgentState(TypedDict):
     feedback: Optional[str]
     retry_count: Dict[str, int]
 
+
 def setup_node(state: AgentState):
+    """
+    Initialize execution context.
+
+    Behavior:
+        - Assigns execution ID (currently hardcoded)
+        - Creates working directory path
+        - Initializes retry counters
+
+    Returns:
+        AgentState: Updated state with execution metadata
+    """
     logger.info("*"*20)
     logger.info("Executing Setup Node")
-    # To do : last execution id will be fetch from the databse and +1 will be used as next
-    state["execution_id"] = 4 # hard coded temporarily 
+
+    state["execution_id"] = 4  # TODO: Replace with DB-generated ID
     state["work_dir"] = os.path.join(working_dir, str(state["execution_id"]))
-    state["retry_count"] = {"review" : 0, "static_check_count": 0}
+
+    # Initialize retry counters
+    state["retry_count"] = {"review": 0, "static_check_count": 0}
+
     return state
 
+
 def file_structure_node(state: AgentState):
+    """
+    Reads and stores file structure of working directory.
+
+    Returns:
+        dict: {"file_structure": str}
+    """
     logger.info("Reading File Strucutre")
-    
-    # structure = read_file_structure.invoke(working_dir)
+
     structure = read_file_structure.invoke(state["work_dir"])
     state["file_structure"] = structure
+
     logger.debug(f"Updating File Structure: \n{structure}")
+
     return {"file_structure": state["file_structure"]}
 
+
 class FilePlan(BaseModel):
-    path: str = Field(description="This is an absolute path of file where work_dir is the parent directory.")
+    """Represents plan for a single file."""
+    path: str = Field(description="Absolute file path")
     action: Literal["create", "update"]
     reason: str
 
+
 class Plan(BaseModel):
+    """Planner output containing full execution plan."""
     summary: str
     files: List[FilePlan]
 
@@ -107,35 +175,59 @@ Repository file structure:
 
 
 def planner_node(state: AgentState):
+    """
+    Generates structured implementation plan using LLM.
+
+    Returns:
+        dict: {"plan": structured_plan}
+
+    Behavior:
+        - Uses project structure + task input
+        - Produces file-level plan
+    """
     logger.info("Executing Planner Node")
+
     formatted_prompt = planner_prompt.format_messages(
         task=state["task"],
         work_dir=state["work_dir"],
         file_structure=state["file_structure"],
         format_instructions=parser.get_format_instructions()
     )
+
     logger.debug(f"Python Planner Prompt: \n{formatted_prompt}")
-    # response = llm.invoke(formatted_prompt)
-    # plan = parser.parse(response.content)
+
+    # Use structured output parsing (safe JSON → Pydantic)
     plan = llm.with_structured_output(Plan).invoke(formatted_prompt)
-    # state["plan"] = plan.model_dump()
+
     return {"plan": plan.model_dump()}
 
 
 def reader_node(state: AgentState):
+    """
+    Reads contents of files marked for update.
+
+    Returns:
+        AgentState: Updated with existing file contents
+    """
     logger.info("Executing Reader Node")
+
     plan = state["plan"]
+
+    # Extract files needing updates
     files_to_update = [
-        file["path"] for file in plan["files"]  # ignore type-check
+        file["path"] for file in plan["files"]
         if file["action"] == "update"
     ]
+
     existing_files = {}
 
+    # Read file contents
     for path in files_to_update:
         content = read_file.invoke(path)
         existing_files[path] = content
 
     state["existing_files"] = existing_files
+
     logger.debug(f"Existing Files: \n{existing_files}")
     return state
 
@@ -345,46 +437,84 @@ def writer_node(state: FileAgentState, backup: bool = True):
     Persist code changes to disk safely.
 
     Args:
-        state: AgentState containing code_changes
-        backup: wheather to backup overwritten files
+        state (FileAgentState):
+            Contains generated code change
+
+        backup (bool):
+            Whether to create backup before overwrite
+
+    Returns:
+        dict:
+            Updated state with:
+                - written_files
+                - code_changes
+
+    Behavior:
+        - Validates path safety
+        - Optionally creates .bak backup
+        - Writes file content
     """
     logger.info("Executing Writer Node")
-    written_files = []
 
+    written_files = []
     code_change = state.get("code_change")
+
     if not code_change:
         logger.warning("No code_change found in the state, skipping writer.")
         return {**state, "written_files": [], "code_changes": []}
-    
+
     work_dir = state["work_dir"]
     path = code_change["path"]
     content = code_change["content"]
-    action = code_change["action"]    
+    action = code_change["action"]
+
+    # Safety check: prevent writing outside working_dir
     if not path.startswith(work_dir):
         logger.critical(f"skipping the file due to wrong file path: {path}")
         return {**state, "written_files": [], "code_changes": []}
-    
+
+    # Ensure directory exists
     os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    # Backup existing file before overwrite
     if backup and action == "update" and os.path.exists(path):
         backup_path = path + ".bak"
         shutil.copyfile(path, backup_path)
         logger.debug(f"Backup created: {backup_path}")
 
+    # Write file content
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
 
     written_files.append(path)
 
-    # state["written_files"] = written_files
     logger.debug(f"Written Files: \n{written_files}")
+
     return {
         **state,
         "written_files": [path],
-        "code_changes": [code_change] 
+        "code_changes": [code_change]
     }
 
+
 def static_check_node(state: FileAgentState):
+    """
+    Run static analysis (Ruff) on modified files.
+
+    Returns:
+        dict:
+            Updated state with:
+                - static_check_success
+                - feedback
+                - retry_count
+
+    Behavior:
+        - Runs `ruff check`
+        - Parses output
+        - Generates summarized feedback
+    """
     logger.info("Executing Static Check Node")
+
     written_files = state.get("written_files", [])
 
     if not written_files:
@@ -396,6 +526,7 @@ def static_check_node(state: FileAgentState):
             "feedback": None
         }
 
+    # Run linter
     result = subprocess.run(
         ["ruff", "check", "--output-format", "json"] + written_files,
         capture_output=True,
@@ -404,6 +535,7 @@ def static_check_node(state: FileAgentState):
 
     success = result.returncode == 0
     output = result.stdout + result.stderr
+
     feedback = None
 
     if not success:

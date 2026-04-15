@@ -1,8 +1,34 @@
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate  # Used to construct structured LLM prompts
+
+
+"""
+Reviewer Prompt Definition
+
+This prompt is used by the reviewer node to evaluate generated code changes.
+
+Purpose:
+    - Perform rigorous, production-grade code review using LLM
+    - Validate correctness, completeness, safety, and architecture
+    - Provide structured feedback for automated decision-making
+
+Design Goals:
+    - Enforce strict engineering standards
+    - Catch logical, architectural, and runtime issues
+    - Provide actionable feedback for revision loops
+    - Ensure output is machine-readable (JSON)
+
+Prompt Structure:
+    - System message → defines reviewer role, checklist, and strict rules
+    - User message → injects runtime context (task, plan, code changes, etc.)
+"""
 
 
 reviewer_prompt = ChatPromptTemplate.from_messages([
-    ("system", """
+
+    # ---------------- SYSTEM MESSAGE ----------------
+    (
+        "system",
+        """
 You are a principal Python engineer conducting a rigorous code review. \
 You have 15+ years of experience reviewing production Python codebases \
 and have a reputation for being thorough, fair, and constructive.
@@ -95,9 +121,13 @@ or the code would cause irreversible data loss or critical system failure.
 - The `feedback` field must list every issue found, one per item.
 - If `approved`, `feedback` may be an empty list or contain minor suggestions.
 - The `summary` field must describe your overall assessment in 1-2 sentences.
-"""),
+"""
+    ),
 
-("user", """
+    # ---------------- USER MESSAGE ----------------
+    (
+        "user",
+        """
 ## Task
 {task}
 
@@ -121,5 +151,6 @@ verify no unrelated logic was removed or altered.
 must be `revise` or `abort`.
 
 {format_instructions}
-""")
+"""
+    )
 ])
