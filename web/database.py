@@ -2,10 +2,26 @@ import os
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 
+"""
+Async database configuration and session management.
+
+Provides:
+- Async SQLAlchemy engine
+- Session factory for DB interactions
+- Base ORM model class
+- FastAPI dependency for request-scoped DB sessions
+
+CONCEPT: This module centralizes all database setup so that:
+- Connection handling is consistent across the app
+- Sessions are properly scoped and cleaned up
+- Models share a common metadata registry
+"""
+
 # -------------------------------------------------------------------
 # Database configuration
 # -------------------------------------------------------------------
-# DATABASE_URL can be set via environment variable, fallback to local Postgres
+# DATABASE_URL can be set via environment variable.
+# Falls back to a local Postgres instance for development.
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
     "postgresql+asyncpg://postgres:postgres@localhost:5432/agentic_sdlc"
@@ -14,14 +30,16 @@ DATABASE_URL = os.getenv(
 # -------------------------------------------------------------------
 # Async SQLAlchemy engine
 # -------------------------------------------------------------------
-# `echo=True` logs all SQL statements (useful for debugging)
+# Creates the core database engine used for all connections.
+# echo=True logs all SQL queries (useful for debugging, disable in production).
 engine = create_async_engine(DATABASE_URL, echo=True)
 
 # -------------------------------------------------------------------
 # Async session maker
 # -------------------------------------------------------------------
-# Creates sessions that are used for async DB operations
-# expire_on_commit=False prevents automatic expiration of ORM objects after commit
+# Factory for creating async database sessions.
+# expire_on_commit=False ensures ORM objects remain usable after commit
+# (avoids needing to re-fetch them).
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,
     class_=AsyncSession,
@@ -31,19 +49,39 @@ AsyncSessionLocal = async_sessionmaker(
 # -------------------------------------------------------------------
 # Base class for all ORM models
 # -------------------------------------------------------------------
-# All models must inherit from this Base class
-# It registers tables and metadata for SQLAlchemy
 class Base(DeclarativeBase):
+    """
+    Base class for all SQLAlchemy ORM models.
+
+    CONCEPT: Every model should inherit from this class so that:
+    - SQLAlchemy can track table metadata
+    - Tables can be created via Base.metadata.create_all()
+    """
     pass
 
 # -------------------------------------------------------------------
-# Dependency function to get a database session
+# Dependency: Get DB session
 # -------------------------------------------------------------------
-# This is used with FastAPI's `Depends(get_db)` in routers
-# Provides an async session and ensures it is closed after use
 async def get_db() -> AsyncSession:
+    """
+    Provide a request-scoped async database session.
+
+    Designed to be used with FastAPI dependency injection:
+        db: AsyncSession = Depends(get_db)
+
+    CONCEPT: Ensures proper session lifecycle management:
+    - A new session is created per request
+    - The session is automatically closed after use
+    - Prevents connection leaks
+
+    Yields:
+        AsyncSession: Active database session.
+    """
+    # Create a new async session
     async with AsyncSessionLocal() as session:
         try:
+            # Provide session to the request handler
             yield session
         finally:
+            # Ensure the session is always closed
             await session.close()
